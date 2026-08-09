@@ -1,0 +1,88 @@
+--- a/services/surfaceflinger/Neo2Eink/android/Android.bp
++++ b/services/surfaceflinger/Neo2Eink/android/Android.bp
+@@ -28,5 +28,5 @@ cc_library_static {
+     export_static_lib_headers: [
+         "libneo2_eink_presentation_core",
+     ],
+-    cflags: ["-DNEO2_M4_ENGINE_LOADER_DIAGNOSTIC=1"],
++    cflags: ["-DNEO2_M4_ENGINE_INIT_DIAGNOSTIC=1"],
+     cpp_std: "c++20",
+ }
+--- a/services/surfaceflinger/Neo2Eink/android/src/render_surface_capture_session.cpp
++++ b/services/surfaceflinger/Neo2Eink/android/src/render_surface_capture_session.cpp
+@@ -15,8 +15,8 @@
+ #include <chrono>
+ #include <atomic>
+-#if defined(NEO2_M4_ENGINE_LOADER_DIAGNOSTIC)
++#if defined(NEO2_M4_ENGINE_INIT_DIAGNOSTIC)
+ #include <dlfcn.h>
+ #include <mutex>
+ #endif
+ #include <memory>
+ #include <utility>
+@@ -89,9 +89,9 @@ void RenderSurfaceCaptureSession::StartMetadataOnly() {
+   if (started_) {
+     return;
+   }
+   started_ = true;
+-#if defined(NEO2_M4_ENGINE_LOADER_DIAGNOSTIC)
++#if defined(NEO2_M4_ENGINE_INIT_DIAGNOSTIC)
+   // Breadcrumb one can be early, so Capture() performs the actual probe.
+-  ALOGE("M4 engine loader diagnostic: StartMetadataOnly entered; probe deferred");
++  ALOGE("M4 engine init diagnostic: StartMetadataOnly entered; probe deferred");
+ #endif
+ }
+@@ -124,27 +124,43 @@ void RenderSurfaceCaptureSession::Capture(
+-#if defined(NEO2_M4_ENGINE_LOADER_DIAGNOSTIC)
++#if defined(NEO2_M4_ENGINE_INIT_DIAGNOSTIC)
+   // Breadcrumb two proves that the live Capture() path reached this gate.
+   static std::once_flag capture_breadcrumb_once;
+   std::call_once(capture_breadcrumb_once, [] {
+-    ALOGE("M4 engine loader diagnostic: Capture entered; waiting for verified geometry");
++    ALOGE("M4 engine init diagnostic: Capture entered; waiting for verified geometry");
+   });
+ 
+   // The remaining breadcrumbs run only from the observed full-panel Capture
+-  // path. It resolves no engine symbol, initializes no engine, and performs no output.
++  // path. This resolves and calls only the recovered zero-argument engine
++  // initializer; it resolves no update symbol and submits no frame.
+   if (metadata->geometry_status == PanelGeometryStatus::kVerified) {
+-    static std::once_flag engine_loader_probe_once;
+-    std::call_once(engine_loader_probe_once, [] {
+-      ALOGE("M4 engine loader diagnostic: verified Capture reached; pre-dlopen");
++    static std::once_flag engine_init_probe_once;
++    std::call_once(engine_init_probe_once, [] {
++      ALOGE("M4 engine init diagnostic: verified Capture reached; pre-dlopen");
+       static_cast<void>(dlerror());
+       void* const handle = dlopen("libidisplayengine.so", RTLD_NOW | RTLD_LOCAL);
+       const char* const error = dlerror();
+       if (handle == nullptr) {
+-        ALOGE("M4 engine loader diagnostic: libidisplayengine dlopen failed: %s",
++        ALOGE("M4 engine init diagnostic: libidisplayengine dlopen failed: %s",
+               error == nullptr ? "unknown linker error" : error);
+         return;
+       }
+-      // Do not dlclose: opaque destructors/lifecycle are unrecovered.
+-      ALOGE("M4 engine loader diagnostic: libidisplayengine dlopen succeeded; "
+-            "no engine symbol, initialization, controller, or output was used");
++      ALOGE("M4 engine init diagnostic: libidisplayengine dlopen succeeded; "
++            "resolving iDisplayEngine_init only");
++      static_cast<void>(dlerror());
++      void* const init_symbol = dlsym(handle, "iDisplayEngine_init");
++      const char* const init_error = dlerror();
++      if (init_symbol == nullptr) {
++        ALOGE("M4 engine init diagnostic: iDisplayEngine_init dlsym failed: %s",
++              init_error == nullptr ? "unknown linker error" : init_error);
++        return;
++      }
++      using DisplayEngineInit = int (*)();
++      const auto engine_init = reinterpret_cast<DisplayEngineInit>(init_symbol);
++      ALOGE("M4 engine init diagnostic: invoking iDisplayEngine_init once; "
++            "no update, deinit, or dlclose will follow");
++      const int init_status = engine_init();
++      // Do not deinit or dlclose: init owns unrecovered process-lifetime work.
++      ALOGE("M4 engine init diagnostic: iDisplayEngine_init returned %d; "
++            "no update, deinit, or dlclose was used", init_status);
+     });
+   }
+ #endif

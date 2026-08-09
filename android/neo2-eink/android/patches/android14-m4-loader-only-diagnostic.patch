@@ -1,0 +1,68 @@
+--- a/services/surfaceflinger/Neo2Eink/android/Android.bp
++++ b/services/surfaceflinger/Neo2Eink/android/Android.bp
+@@ -28,6 +28,7 @@
+     export_static_lib_headers: [
+         "libneo2_eink_presentation_core",
+     ],
++    cflags: ["-DNEO2_M4_LOADER_DIAGNOSTIC=1"],
+     cpp_std: "c++20",
+ }
+ 
+--- a/services/surfaceflinger/Neo2Eink/android/src/render_surface_capture_session.cpp
++++ b/services/surfaceflinger/Neo2Eink/android/src/render_surface_capture_session.cpp
+@@ -14,6 +14,10 @@
+ 
+ #include <chrono>
+ #include <atomic>
++#if defined(NEO2_M4_LOADER_DIAGNOSTIC)
++#include <dlfcn.h>
++#include <mutex>
++#endif
+ #include <memory>
+ #include <utility>
+ 
+@@ -87,6 +91,10 @@
+     return;
+   }
+   started_ = true;
++#if defined(NEO2_M4_LOADER_DIAGNOSTIC)
++  // Breadcrumb one can be early, so Capture() performs the actual probe.
++  ALOGE("M4 loader diagnostic v2: StartMetadataOnly entered; probe deferred");
++#endif
+ }
+ 
+ void RenderSurfaceCaptureSession::Stop() {
+@@ -113,6 +121,33 @@
+   if (!metadata) {
+     return;
+   }
++#if defined(NEO2_M4_LOADER_DIAGNOSTIC)
++  // Breadcrumb two proves that the live Capture() path reached this gate.
++  static std::once_flag capture_breadcrumb_once;
++  std::call_once(capture_breadcrumb_once, [] {
++    ALOGE("M4 loader diagnostic v2: Capture entered; waiting for verified geometry");
++  });
++
++  // The remaining breadcrumbs run only from the observed full-panel Capture
++  // path. This loads no symbol and constructs no Sync object.
++  if (metadata->geometry_status == PanelGeometryStatus::kVerified) {
++    static std::once_flag loader_probe_once;
++    std::call_once(loader_probe_once, [] {
++      ALOGE("M4 loader diagnostic v2: verified Capture reached; pre-dlopen");
++      static_cast<void>(dlerror());
++      void* const handle = dlopen("libeinksfpatch.so", RTLD_NOW | RTLD_LOCAL);
++      const char* const error = dlerror();
++      if (handle == nullptr) {
++        ALOGE("M4 loader diagnostic v2: libeinksfpatch dlopen failed: %s",
++              error == nullptr ? "unknown linker error" : error);
++        return;
++      }
++      // Do not dlclose: opaque destructors/lifecycle are unrecovered.
++      ALOGE("M4 loader diagnostic v2: libeinksfpatch dlopen succeeded; "
++            "no vendor symbol, Sync object, controller, or output was used");
++    });
++  }
++#endif
+   if (metadata->geometry_status != reported_geometry_status_) {
+     reported_geometry_status_ = metadata->geometry_status;
+     if (reported_geometry_status_ == PanelGeometryStatus::kVerified) {

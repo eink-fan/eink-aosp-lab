@@ -1,0 +1,12 @@
+diff --git a/build/make/target/product/aosp_arm64.mk b/build/make/target/product/aosp_arm64.mk
+--- a/build/make/target/product/aosp_arm64.mk
++++ b/build/make/target/product/aosp_arm64.mk
+@@ -36,7 +36,7 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/generic_system.mk)
+ # runtime files; it does not link or call the vendor presenter.
+ # Never set it for M1–M3 builds.
+ ifeq ($(NEO2_M4_RUNTIME_PAYLOAD),true)
+-$(call inherit-product, frameworks/native/services/surfaceflinger/Neo2Eink/android/vendor-runtime/m4_vendor_runtime_payload.mk)
++$(call inherit-product, frameworks/native/services/surfaceflinger/Neo2Eink/vendor-runtime/m4_vendor_runtime_payload.mk)
+ endif
+ 
+ # Enable mainline checking for excat this product name

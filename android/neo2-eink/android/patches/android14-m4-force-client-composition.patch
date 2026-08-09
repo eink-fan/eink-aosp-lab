@@ -1,0 +1,28 @@
+--- a/services/surfaceflinger/Android.bp
++++ b/services/surfaceflinger/Android.bp
+@@ -1,3 +1,12 @@
+     ],
+ 
++    // The generic HWC marks normal guest UI as DEVICE composition, which
++    // bypasses the M4 RenderSurface client-target capture seam. This M4-only,
++    // arm64 flag selects SurfaceFlinger's existing client-composition path;
++    // the separate lower-engine backend still caps panel submissions.
++    target: {
++        android_arm64: {
++            cflags: ["-DNEO2_EINK_M4_FORCE_CLIENT_COMPOSITION=1"],
++        },
++    },
+     logtags: ["EventLog/EventLogTags.logtags"],
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -1,3 +1,10 @@
+     }
+ 
++    // The M4 DSU has no usable generic-HWC scanout, but its bounded retained
++    // e-ink presenter consumes RenderSurface client targets. Reuse the
++    // existing force-client-composition path only in that arm64 experiment;
++    // ordinary Android builds retain their normal HWC policy.
+     refreshArgs.devOptForceClientComposition = mDebugDisableHWC;
++#if defined(NEO2_EINK_M4_FORCE_CLIENT_COMPOSITION)
++    refreshArgs.devOptForceClientComposition = true;
++#endif

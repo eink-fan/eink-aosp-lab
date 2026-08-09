@@ -1,0 +1,24 @@
+diff --git a/system/sepolicy/private/file.te b/system/sepolicy/private/file.te
+--- a/system/sepolicy/private/file.te
++++ b/system/sepolicy/private/file.te
+@@ -113 +113,5 @@
+ type neo2_eink_vcom_sysfs, fs_type, sysfs_type, mlstrustedobject;
++
++# One RM06L waveform-temperature attribute. The retained engine opens it
++# write-only as part of its own LUT setup; it is not a general thermal node.
++type neo2_eink_temper_info_sysfs, fs_type, sysfs_type, mlstrustedobject;
+diff --git a/system/sepolicy/private/genfs_contexts b/system/sepolicy/private/genfs_contexts
+--- a/system/sepolicy/private/genfs_contexts
++++ b/system/sepolicy/private/genfs_contexts
+@@ -129 +129,2 @@
+ genfscon sysfs /devices/platform/soc/soc:mtk_ireader/vcomvalue u:object_r:neo2_eink_vcom_sysfs:s0
++genfscon sysfs /devices/platform/soc/soc:mtk_ireader/einktemperinfo u:object_r:neo2_eink_temper_info_sysfs:s0
+diff --git a/system/sepolicy/private/surfaceflinger.te b/system/sepolicy/private/surfaceflinger.te
+--- a/system/sepolicy/private/surfaceflinger.te
++++ b/system/sepolicy/private/surfaceflinger.te
+@@ -57 +57,5 @@
+ allow surfaceflinger neo2_eink_vcom_sysfs:file { getattr open read };
++
++# The retained engine owns this selected-path LUT temperature write. Do not
++# replace it with access to generic thermal/sysfs attributes.
++allow surfaceflinger neo2_eink_temper_info_sysfs:file { open write };

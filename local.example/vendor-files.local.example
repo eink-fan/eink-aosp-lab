@@ -1,0 +1,8 @@
+# Private local-only manifest example.
+#
+# Copy this file outside the repository, replace the placeholders with relative
+# paths from YOUR locally obtained stock tree, and do not commit the copy.
+#
+# Examples intentionally use no real device paths:
+# proprietary/subsystem/file-one
+# proprietary/subsystem/file-two

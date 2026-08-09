@@ -1,0 +1,6 @@
+--- a/system/sepolicy/private/genfs_contexts
++++ b/system/sepolicy/private/genfs_contexts
+@@ -127 +127,2 @@
+-genfscon sysfs /eink/burn/pix_fmt                 u:object_r:neo2_eink_pix_fmt_sysfs:s0
++# `/sys/eink/burn` is a symlink; match the kernel's canonical sysfs inode path.
++genfscon sysfs /devices/platform/soc/soc:mtk_ireader/pix_fmt u:object_r:neo2_eink_pix_fmt_sysfs:s0

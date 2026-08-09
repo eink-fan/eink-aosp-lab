@@ -1,0 +1,28 @@
+# Never publish locally obtained device material or build outputs.
+/local/
+/payload/
+/workspaces/
+/artifacts/
+/evidence/
+/out/
+/build/
+*.img
+*.zip
+*.tgz
+*.tar
+*.tar.gz
+*.apk
+*.apex
+*.so
+*.bin
+*.mbn
+*.dtb
+*.dtbo
+*.log
+*.pcap
+*.sqlite
+
+# Local editor and OS state.
+.DS_Store
+.idea/
+.vscode/

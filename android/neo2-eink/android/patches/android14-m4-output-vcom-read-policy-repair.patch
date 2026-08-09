@@ -1,0 +1,20 @@
+diff --git a/system/sepolicy/private/file.te b/system/sepolicy/private/file.te
+--- a/system/sepolicy/private/file.te
++++ b/system/sepolicy/private/file.te
+@@ -109,5 +109,6 @@
+ type neo2_eink_pix_fmt_sysfs, fs_type, sysfs_type, mlstrustedobject;
+ 
+ # One RM06L calibration attribute read by the retained engine during startup.
+ # It is deliberately separate from generic sysfs and remains read-only.
++type neo2_eink_vcom_sysfs, fs_type, sysfs_type, mlstrustedobject;
+ 
+diff --git a/system/sepolicy/private/surfaceflinger.te b/system/sepolicy/private/surfaceflinger.te
+--- a/system/sepolicy/private/surfaceflinger.te
++++ b/system/sepolicy/private/surfaceflinger.te
+@@ -53,5 +53,6 @@
+ allow surfaceflinger neo2_eink_pix_fmt_sysfs:file { open write };
+ 
+ # The direct engine reads the board-calibrated VCOM value; do not authorize
+ # its separately exported setter or any generic sysfs access.
++allow surfaceflinger neo2_eink_vcom_sysfs:file { getattr open read };
+ 

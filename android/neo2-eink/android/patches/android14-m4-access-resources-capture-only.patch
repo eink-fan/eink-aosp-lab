@@ -1,0 +1,45 @@
+--- a/frameworks/native/services/surfaceflinger/Neo2Eink/android/Android.bp
++++ b/frameworks/native/services/surfaceflinger/Neo2Eink/android/Android.bp
+@@ -28,6 +28,5 @@ cc_library_static {
+     export_static_lib_headers: [
+         "libneo2_eink_presentation_core",
+     ],
+-    cflags: ["-DNEO2_M4_ENGINE_INIT_DIAGNOSTIC=1"],
+     cpp_std: "c++20",
+ }
+--- a/system/sepolicy/private/file.te
++++ b/system/sepolicy/private/file.te
+@@ -103,6 +103,10 @@ type environ_system_data_file, file_type, data_file_type, core_data_file_type;
+ # /data/bootanim
+ type bootanim_data_file, file_type, data_file_type, core_data_file_type;
+ 
++# Exact RM06L e-ink controller endpoints; no generic /dev access is implied.
++# This platform-private type is used only by SurfaceFlinger policy below.
++type neo2_eink_controller_device, dev_type;
++
+ # /dev/kvm
+ # The type needs to be mlstrustedobject to allow for being accessed from
+ # crosvm, which runs at a more constrained MLS level.
+--- a/system/sepolicy/private/file_contexts
++++ b/system/sepolicy/private/file_contexts
+@@ -71,6 +71,8 @@
+ ##########################
+ # Devices
+ #
++/dev/swtcon_power_cdev  u:object_r:neo2_eink_controller_device:s0
++/dev/zhangyuecdev       u:object_r:neo2_eink_controller_device:s0
+ /dev(/.*)?		u:object_r:device:s0
+ /dev/adf[0-9]*		u:object_r:graphics_device:s0
+ /dev/adf-interface[0-9]*\.[0-9]*	u:object_r:graphics_device:s0
+--- a/system/sepolicy/private/surfaceflinger.te
++++ b/system/sepolicy/private/surfaceflinger.te
+@@ -45,5 +45,9 @@ allow surfaceflinger graphics_device:dir search;
+ allow surfaceflinger graphics_device:chr_file rw_file_perms;
+ 
++# Exact RM06L controller endpoints, intentionally not the generic device type.
++allow surfaceflinger neo2_eink_controller_device:chr_file rw_file_perms;
++
++
+ # Access /dev/video1.
+ allow surfaceflinger video_device:dir r_dir_perms;
+ allow surfaceflinger video_device:chr_file rw_file_perms;

@@ -1,0 +1,29 @@
+diff --git a/system/sepolicy/private/file.te b/system/sepolicy/private/file.te
+--- a/system/sepolicy/private/file.te
++++ b/system/sepolicy/private/file.te
+@@ -117 +117,5 @@
+ type neo2_eink_temper_info_sysfs, fs_type, sysfs_type, mlstrustedobject;
++
++# The retained Zhangyue driver reads only these two RM06L raw partitions while
++# loading waveform and token/VCOM metadata. This is not generic block access.
++type neo2_eink_waveform_storage_block_device, dev_type;
+diff --git a/system/sepolicy/private/file_contexts b/system/sepolicy/private/file_contexts
+--- a/system/sepolicy/private/file_contexts
++++ b/system/sepolicy/private/file_contexts
+@@ -71,5 +71,7 @@
+ # Devices
+ #
+ /dev/swtcon_power_cdev  u:object_r:neo2_eink_controller_device:s0
+ /dev/zhangyuecdev       u:object_r:neo2_eink_controller_device:s0
++/dev/block/mmcblk0p1    u:object_r:neo2_eink_waveform_storage_block_device:s0
++/dev/block/mmcblk0p2    u:object_r:neo2_eink_waveform_storage_block_device:s0
+ /dev(/.*)?		u:object_r:device:s0
+diff --git a/system/sepolicy/private/surfaceflinger.te b/system/sepolicy/private/surfaceflinger.te
+--- a/system/sepolicy/private/surfaceflinger.te
++++ b/system/sepolicy/private/surfaceflinger.te
+@@ -61 +61,5 @@
+ allow surfaceflinger neo2_eink_temper_info_sysfs:file { open write };
++
++# The kernel-owned waveform loader reads p1/p2 using the caller's credentials.
++# Keep this exact, read-only raw-block access separate from generic block_device.
++allow surfaceflinger neo2_eink_waveform_storage_block_device:blk_file { getattr open read };

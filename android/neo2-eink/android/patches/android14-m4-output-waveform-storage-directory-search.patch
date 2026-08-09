@@ -1,0 +1,7 @@
+diff --git a/system/sepolicy/private/surfaceflinger.te b/system/sepolicy/private/surfaceflinger.te
+--- a/system/sepolicy/private/surfaceflinger.te
++++ b/system/sepolicy/private/surfaceflinger.te
+@@ -65 +65,3 @@
+ allow surfaceflinger neo2_eink_waveform_storage_block_device:blk_file { getattr open read };
++# Traverse the shared /dev/block directory to the two exact typed leaves only.
++allow surfaceflinger block_device:dir search;

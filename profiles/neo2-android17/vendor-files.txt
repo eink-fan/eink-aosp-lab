@@ -1,0 +1,25 @@
+# Relative destination paths for the locally extracted Neo 2 Android-17
+# runtime. These are payload names only; the bytes are never committed.
+libEink_Kaleido_render.so
+libeink.so
+libeink_color.so
+libeinkpen.so
+libeinksfpatch.so
+libeinkskia.so
+libeinkutils.so
+libfbhandsurface.so
+libidisplayV3.so
+libidisplayengine.so
+payload-system/libeink_ED070KC4.so
+payload-system/libeink_ED070KC5.so
+payload-system/libeinkinput.so
+payload-system_ext/libJpegOal.so
+payload-system_ext/libjpeg-alpha-oal.so
+payload-system_ext/libjpeg-alpha.so
+payload-system_ext/vendor.mediatek.hardware.mms@1.0.so
+payload-system_ext/vendor.mediatek.hardware.mms@1.1.so
+payload-system_ext/vendor.mediatek.hardware.mms@1.2.so
+payload-system_ext/vendor.mediatek.hardware.mms@1.3.so
+waveforms/default_nm.bin
+waveforms/default_wbf.bin
+waveforms/regal.wbf

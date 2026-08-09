@@ -1,0 +1,69 @@
+--- a/system/sepolicy/private/file.te
++++ b/system/sepolicy/private/file.te
+@@ -106 +106,15 @@
+type neo2_eink_controller_device, dev_type;
+# The retained Zhangyue driver reads only these two RM06L raw partitions while
+# loading waveform and token/VCOM metadata. This is not generic block access.
+type neo2_eink_waveform_storage_block_device, dev_type;
++# One RM06L output-control sysfs attribute. This type is intentionally
++# separate from both generic sysfs and the e-ink controller character nodes.
++type neo2_eink_pix_fmt_sysfs, fs_type, sysfs_type, mlstrustedobject;
++
++# One RM06L calibration attribute read by the retained engine during startup.
++# It is deliberately separate from generic sysfs and remains read-only.
++type neo2_eink_vcom_sysfs, fs_type, sysfs_type, mlstrustedobject;
++
++# One RM06L waveform-temperature attribute. The retained engine opens it
++# write-only as part of its own LUT setup; it is not a general thermal node.
++type neo2_eink_temper_info_sysfs, fs_type, sysfs_type, mlstrustedobject;
+diff --git a/system/sepolicy/private/genfs_contexts b/system/sepolicy/private/genfs_contexts
+--- a/system/sepolicy/private/genfs_contexts
++++ b/system/sepolicy/private/genfs_contexts
+@@ -126,2 +126,7 @@
+ genfscon sysfs /class/leds                        u:object_r:sysfs_leds:s0
++# `/sys/eink/burn` is a symlink; genfscon must match the kernel's canonical
++# sysfs inode path rather than that convenient userspace spelling.
++genfscon sysfs /devices/platform/soc/soc:mtk_ireader/pix_fmt u:object_r:neo2_eink_pix_fmt_sysfs:s0
++genfscon sysfs /devices/platform/soc/soc:mtk_ireader/vcomvalue u:object_r:neo2_eink_vcom_sysfs:s0
++genfscon sysfs /devices/platform/soc/soc:mtk_ireader/einktemperinfo u:object_r:neo2_eink_temper_info_sysfs:s0
+ genfscon sysfs /class/net                         u:object_r:sysfs_net:s0
+diff --git a/system/sepolicy/private/file_contexts b/system/sepolicy/private/file_contexts
+--- a/system/sepolicy/private/file_contexts
++++ b/system/sepolicy/private/file_contexts
+@@ -71,5 +71,7 @@
+ # Devices
+ #
+ /dev/swtcon_power_cdev  u:object_r:neo2_eink_controller_device:s0
+ /dev/zhangyuecdev       u:object_r:neo2_eink_controller_device:s0
++/dev/block/mmcblk0p1    u:object_r:neo2_eink_waveform_storage_block_device:s0
++/dev/block/mmcblk0p2    u:object_r:neo2_eink_waveform_storage_block_device:s0
+ /dev(/.*)?		u:object_r:device:s0
+diff --git a/system/sepolicy/private/surfaceflinger.te b/system/sepolicy/private/surfaceflinger.te
+--- a/system/sepolicy/private/surfaceflinger.te
++++ b/system/sepolicy/private/surfaceflinger.te
+@@ -48,5 +48,21 @@
+ # Exact RM06L controller endpoints, intentionally not the generic device type.
+ allow surfaceflinger neo2_eink_controller_device:chr_file rw_file_perms;
+ 
++# The kernel-owned waveform loader reads p1/p2 using the caller's credentials.
++# Keep this exact, read-only raw-block access separate from generic block_device.
++allow surfaceflinger neo2_eink_waveform_storage_block_device:blk_file { getattr open read };
++# /dev/block retains the platform's shared directory label; search is required
++# to traverse to the two exact leaf nodes above, without authorizing any peer.
++allow surfaceflinger block_device:dir search;
++
+ 
++# The retained engine opens only this attribute write-only during startup.
++# Do not replace this with an allow rule on generic sysfs.
++allow surfaceflinger neo2_eink_pix_fmt_sysfs:file { open write };
++
++# The direct engine reads the board-calibrated VCOM value; do not authorize
++# its separately exported setter or any generic sysfs access.
++allow surfaceflinger neo2_eink_vcom_sysfs:file { getattr open read };
++
++# The retained engine owns this selected-path LUT temperature write. Do not
++# replace it with access to generic thermal/sysfs attributes.
++allow surfaceflinger neo2_eink_temper_info_sysfs:file { open write };
++
+ 
+ # Access /dev/video1.

@@ -1,0 +1,64 @@
+diff --git a/target/product/aosp_arm64.mk b/target/product/aosp_arm64.mk
+--- a/target/product/aosp_arm64.mk
++++ b/target/product/aosp_arm64.mk
+@@ -32,6 +32,13 @@
+ $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
+ $(call inherit-product, $(SRC_TARGET_DIR)/product/generic_system.mk)
+ 
++# Explicit B012 payload-build gate. This adds only the checksummed RM06L
++# runtime files; it does not link or call the vendor presenter.
++# Never set it outside the B012 binding build.
++ifeq ($(NEO2_M4_RUNTIME_PAYLOAD),true)
++$(call inherit-product, frameworks/native/services/surfaceflinger/Neo2Eink/android/vendor-runtime/m4_vendor_runtime_payload.mk)
++endif
++
+ # Enable mainline checking for excat this product name
+ ifeq (aosp_arm64,$(TARGET_PRODUCT))
+ PRODUCT_ENFORCE_ARTIFACT_PATH_REQUIREMENTS := relaxed
+diff --git a/target/product/gsi/Android.bp b/target/product/gsi/Android.bp
+--- a/target/product/gsi/Android.bp
++++ b/target/product/gsi/Android.bp
+@@ -219,9 +219,43 @@ android_system_image {
+         "initial-package-stopped-states-aosp.xml",
+         "PhotoTable",
+         "preinstalled-packages-platform-aosp-product.xml",
+         "ThemePicker",
++
++        // B012 Android-17 full-binding product modules.
++        "libneo2_stock_einksfpatch",
++        "libneo2_stock_idisplayengine",
++        "libneo2_stock_idisplayv3",
++        "libneo2_stock_einkutils",
++        "libneo2_stock_fbhandsurface",
++        "libneo2_stock_einkpen",
++        "libneo2_stock_einkskia",
++        "libneo2_stock_eink",
++        "libneo2_stock_eink_color",
++        "libneo2_stock_eink_kaleido_render",
++        "libneo2_stock_eink_ed070kc4",
++        "libneo2_stock_eink_ed070kc5",
++        "libneo2_stock_einkinput",
++        "neo2_stock_default_wbf",
++        "neo2_stock_default_nm",
++        "neo2_stock_regal_wbf",
++        "neo2_stock_frontlight_calibration",
++        "libneo2_stock_jpeg_oal",
++        "libneo2_stock_jpeg_alpha",
++        "libneo2_stock_jpeg_alpha_oal",
++        "libneo2_stock_mms_1_0",
++        "libneo2_stock_mms_1_1",
++        "libneo2_stock_mms_1_2",
++        "libneo2_stock_mms_1_3",
+     ] + select(product_variable("debuggable"), {
+         true: ["frameworks-base-overlays-debug"],
+         default: [],
+     }),
++    multilib: {
++        both: {
++            deps: [
++                "android.hardware.health-V1-ndk",
++                "libusb",
++            ],
++        },
++    },
+     enabled: select(soong_config_variable("gsi", "building_gsi"), {

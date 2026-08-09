@@ -1,0 +1,102 @@
+diff --git a/services/surfaceflinger/CompositionEngine/Android.bp b/services/surfaceflinger/CompositionEngine/Android.bp
+index f3a0186..0764507 100644
+--- a/services/surfaceflinger/CompositionEngine/Android.bp
++++ b/services/surfaceflinger/CompositionEngine/Android.bp
+@@ -84,6 +84,10 @@ cc_library {
+         "src/OutputLayerCompositionState.cpp",
+         "src/RenderSurface.cpp",
+     ],
++    whole_static_libs: [
++        "libneo2_eink_render_surface_capture",
++    ],
++    cflags: ["-DNEO2_EINK_METADATA_ONLY=1"],
+     local_include_dirs: ["include"],
+     export_include_dirs: ["include"],
+ }
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/RenderSurface.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/RenderSurface.h
+index 1c14a43..f1851d1 100644
+--- a/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/RenderSurface.h
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/RenderSurface.h
+@@ -28,6 +28,10 @@
+ 
+ struct ANativeWindow;
+ 
++namespace neo2::eink::android {
++class RenderSurfaceCaptureSession;
++}
++
+ namespace android {
+ 
+ namespace compositionengine {
+@@ -86,6 +90,9 @@ private:
+     ui::Size mSize;
+     const size_t mMaxTextureCacheSize;
+     bool mProtected{false};
++#if defined(NEO2_EINK_METADATA_ONLY)
++    std::unique_ptr<::neo2::eink::android::RenderSurfaceCaptureSession> mNeo2CaptureSession;
++#endif
+ };
+ 
+ std::unique_ptr<compositionengine::RenderSurface> createRenderSurface(
+diff --git a/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp b/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
+index 0fe55db..90f843a 100644
+--- a/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
+@@ -34,6 +34,10 @@
+ #include <ui/Rect.h>
+ #include <utils/Trace.h>
+ 
++#if defined(NEO2_EINK_METADATA_ONLY)
++#include <neo2/eink/render_surface_capture_session.h>
++#endif
++
+ // TODO(b/129481165): remove the #pragma below and fix conversion issues
+ #pragma clang diagnostic push
+ #pragma clang diagnostic ignored "-Wconversion"
+@@ -67,11 +71,19 @@ RenderSurface::RenderSurface(const CompositionEngine& compositionEngine, Display
+         mSize(args.displayWidth, args.displayHeight),
+         mMaxTextureCacheSize(args.maxTextureCacheSize) {
+     LOG_ALWAYS_FATAL_IF(!mNativeWindow);
++#if defined(NEO2_EINK_METADATA_ONLY)
++    if (!mDisplay.isVirtual()) {
++        mNeo2CaptureSession =
++                std::make_unique<::neo2::eink::android::RenderSurfaceCaptureSession>();
++    }
++#endif
+ }
+ 
+ RenderSurface::~RenderSurface() {
+-    ANativeWindow* const window = mNativeWindow.get();
+-    native_window_api_disconnect(window, NATIVE_WINDOW_API_EGL);
++#if defined(NEO2_EINK_METADATA_ONLY)
++    mNeo2CaptureSession.reset();
++#endif
++    native_window_api_disconnect(mNativeWindow.get(), NATIVE_WINDOW_API_EGL);
+ }
+ 
+ bool RenderSurface::isValid() const {
+@@ -87,6 +99,12 @@ void RenderSurface::initialize() {
+     ALOGE_IF(status != NO_ERROR, "Unable to set BQ format to RGBA888: %d", status);
+     status = native_window_set_usage(window, DEFAULT_USAGE);
+     ALOGE_IF(status != NO_ERROR, "Unable to set BQ usage bits for GPU rendering: %d", status);
++
++#if defined(NEO2_EINK_METADATA_ONLY)
++    if (mNeo2CaptureSession) {
++        mNeo2CaptureSession->StartMetadataOnly();
++    }
++#endif
+ }
+ 
+ const ui::Size& RenderSurface::getSize() const {
+@@ -220,6 +238,11 @@ void RenderSurface::queueBuffer(base::unique_fd readyFence) {
+         if (mTexture == nullptr) {
+             ALOGE("No buffer is ready for display [%s]", mDisplay.getName().c_str());
+         } else {
++#if defined(NEO2_EINK_METADATA_ONLY)
++            if (mNeo2CaptureSession) {
++                mNeo2CaptureSession->Capture(mTexture, readyFence);
++            }
++#endif
+             status_t result = mNativeWindow->queueBuffer(mNativeWindow.get(),
+                                                          mTexture->getBuffer()->getNativeBuffer(),
+                                                          dup(readyFence));

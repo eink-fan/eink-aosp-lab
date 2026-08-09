@@ -1,0 +1,105 @@
+--- a/frameworks/native/services/surfaceflinger/Neo2Eink/android/Android.bp
++++ b/frameworks/native/services/surfaceflinger/Neo2Eink/android/Android.bp
+@@ -28,4 +28,5 @@ cc_library_static {
+     export_static_lib_headers: [
+         "libneo2_eink_presentation_core",
+     ],
++    cflags: ["-DNEO2_M4_READ_ONLY_CONTROLLER_AUDIT=1"],
+     cpp_std: "c++20",
+ }
+--- a/frameworks/native/services/surfaceflinger/Neo2Eink/android/src/render_surface_capture_session.cpp
++++ b/frameworks/native/services/surfaceflinger/Neo2Eink/android/src/render_surface_capture_session.cpp
+@@ -13,6 +13,14 @@
+ #include <chrono>
+ #include <atomic>
++#if defined(NEO2_M4_READ_ONLY_CONTROLLER_AUDIT)
++#include <cstdint>
++#include <fcntl.h>
++#include <mutex>
++#include <sys/ioctl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
+ #include <memory>
+ #include <utility>
+@@ -124,6 +132,75 @@ void RenderSurfaceCaptureSession::Capture(
+     }
+   }
+
++#if defined(NEO2_M4_READ_ONLY_CONTROLLER_AUDIT)
++  // This must run only from the observed Capture() lifecycle after the M3
++  // geometry gate. It performs read-only file/node/query evidence only.
++  if (metadata->geometry_status == PanelGeometryStatus::kVerified) {
++    static std::once_flag audit_once;
++    std::call_once(audit_once, [] {
++      constexpr unsigned long kZyGetDmaBufferSize = 0x80045a00UL;
++      constexpr unsigned long kZyGetBufferAddress = 0x80085a01UL;
++      constexpr unsigned long kSwtconGetTemperature = 0x8004462bUL;
++      constexpr unsigned long kSwtconGetVcom = 0x80044630UL;
++      constexpr unsigned long kSwtconGetPowerGood = 0x80044631UL;
++      constexpr unsigned long kSwtconGetDisplayState = 0x80044633UL;
++      ALOGE("M4 read-only controller audit: begin; no engine, setter, DRM, or update");
++      const auto audit_file = [](const char* path) {
++        const int fd = open(path, O_RDONLY | O_CLOEXEC);
++        if (fd < 0) {
++          ALOGE("M4 read-only controller audit: open failed: %s", path);
++          return;
++        }
++        struct stat st {};
++        if (fstat(fd, &st) != 0) {
++          ALOGE("M4 read-only controller audit: fstat failed: %s", path);
++        } else {
++          ALOGE("M4 read-only controller audit: file=%s bytes=%lld", path,
++                static_cast<long long>(st.st_size));
++        }
++        close(fd);
++      };
++      audit_file("/system/etc/default_wbf.bin");
++      audit_file("/system/etc/regal.wbf");
++      const auto open_endpoint = [](const char* path) {
++        const int fd = open(path, O_RDONLY | O_CLOEXEC);
++        if (fd < 0) {
++          ALOGE("M4 read-only controller audit: endpoint open failed: %s", path);
++          return -1;
++        }
++        struct stat st {};
++        if (fstat(fd, &st) != 0) {
++          ALOGE("M4 read-only controller audit: endpoint fstat failed: %s", path);
++          close(fd);
++          return -1;
++        }
++        ALOGE("M4 read-only controller audit: endpoint open=%s rdev=%llu mode=%#o", path,
++              static_cast<unsigned long long>(st.st_rdev),
++              static_cast<unsigned int>(st.st_mode & 0777));
++        return fd;
++      };
++      const int zhangyue = open_endpoint("/dev/zhangyuecdev");
++      if (zhangyue >= 0) {
++        std::uint32_t dma_size = 0;
++        std::uint64_t dma_address = 0;
++        ALOGE("M4 read-only controller audit: zhangyue dma_size ok=%d value=%u",
++              ioctl(zhangyue, kZyGetDmaBufferSize, &dma_size) == 0, dma_size);
++        ALOGE("M4 read-only controller audit: zhangyue dma_address_present=%d",
++              ioctl(zhangyue, kZyGetBufferAddress, &dma_address) == 0 && dma_address != 0);
++        close(zhangyue);
++      }
++      const int swtcon = open_endpoint("/dev/swtcon_power_cdev");
++      if (swtcon >= 0) {
++        for (const auto [name, command] : {std::pair{"temperature", kSwtconGetTemperature},
++                                           std::pair{"vcom", kSwtconGetVcom},
++                                           std::pair{"power_good", kSwtconGetPowerGood},
++                                           std::pair{"display_state", kSwtconGetDisplayState}}) {
++          std::uint32_t value = 0;
++          ALOGE("M4 read-only controller audit: swtcon %s ok=%d value=0x%08x", name,
++                ioctl(swtcon, static_cast<unsigned int>(command), &value) == 0, value);
++        }
++        close(swtcon);
++      }
++      ALOGE("M4 read-only controller audit: complete; no engine, setter, DRM, or update used");
++    });
++  }
++#endif
++
+   MaybeStartM3();
+   CaptureM3(texture, ready_fence);
+ }

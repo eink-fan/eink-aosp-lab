@@ -1,0 +1,40 @@
+--- a/services/surfaceflinger/CompositionEngine/Android.bp
++++ b/services/surfaceflinger/CompositionEngine/Android.bp
+@@ -87,7 +87,10 @@ cc_library {
+     whole_static_libs: [
+         "libneo2_eink_render_surface_capture",
+     ],
+-    cflags: ["-DNEO2_EINK_METADATA_ONLY=1"],
++    cflags: [
++        "-DNEO2_EINK_METADATA_ONLY=1",
++        "-DNEO2_EINK_M3_CAPTURE_ONLY=1",
++    ],
+     local_include_dirs: ["include"],
+     export_include_dirs: ["include"],
+ }
+
+--- a/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
+@@ -33,6 +33,7 @@
+ #include <ui/GraphicBuffer.h>
+ #include <ui/Rect.h>
+ #include <utils/Trace.h>
++#include <cstdint>
+ 
+ #if defined(NEO2_EINK_METADATA_ONLY)
+ #include <neo2/eink/render_surface_capture_session.h>
+@@ -72,8 +73,14 @@ RenderSurface::RenderSurface(const CompositionEngine& compositionEngine, Display
+     LOG_ALWAYS_FATAL_IF(!mNativeWindow);
+ #if defined(NEO2_EINK_METADATA_ONLY)
+     if (!mDisplay.isVirtual()) {
++#if defined(NEO2_EINK_M3_CAPTURE_ONLY)
++        mNeo2CaptureSession = std::make_unique<::neo2::eink::android::RenderSurfaceCaptureSession>(
++                mCompositionEngine.getRenderEngine(), static_cast<std::uint32_t>(mSize.getWidth()),
++                static_cast<std::uint32_t>(mSize.getHeight()));
++#else
+         mNeo2CaptureSession =
+                 std::make_unique<::neo2::eink::android::RenderSurfaceCaptureSession>();
++#endif
+     }
+ #endif
+ }

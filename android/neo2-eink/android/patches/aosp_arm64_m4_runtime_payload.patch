@@ -1,0 +1,18 @@
+diff --git a/build/make/target/product/aosp_arm64.mk b/build/make/target/product/aosp_arm64.mk
+index 05b381b5e5..dbe56d73af 100644
+--- a/build/make/target/product/aosp_arm64.mk
++++ b/build/make/target/product/aosp_arm64.mk
+@@ -30,6 +30,13 @@ endif
+ $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
+ $(call inherit-product, $(SRC_TARGET_DIR)/product/generic_system.mk)
+ 
++# Explicit M4 payload-build gate. This adds only the checksummed RM06L
++# runtime files; it does not link or call the vendor presenter.
++# Never set it for M1–M3 builds.
++ifeq ($(NEO2_M4_RUNTIME_PAYLOAD),true)
++$(call inherit-product, frameworks/native/services/surfaceflinger/Neo2Eink/android/vendor-runtime/m4_vendor_runtime_payload.mk)
++endif
++
+ # Enable mainline checking for excat this product name
+ ifeq (aosp_arm64,$(TARGET_PRODUCT))
+ PRODUCT_ENFORCE_ARTIFACT_PATH_REQUIREMENTS := relaxed

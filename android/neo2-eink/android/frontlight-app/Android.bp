@@ -1,0 +1,9 @@
+android_app {
+    name: "Neo2Controls",
+    srcs: ["src/**/*.java"],
+    manifest: "AndroidManifest.xml",
+    platform_apis: true,
+    certificate: "platform",
+    privileged: true,
+    optimize: { enabled: true },
+}

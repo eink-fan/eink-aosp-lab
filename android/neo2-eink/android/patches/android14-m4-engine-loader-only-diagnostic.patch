@@ -1,0 +1,72 @@
+--- a/services/surfaceflinger/Neo2Eink/android/Android.bp
++++ b/services/surfaceflinger/Neo2Eink/android/Android.bp
+@@ -28,5 +28,5 @@ cc_library_static {
+     export_static_lib_headers: [
+         "libneo2_eink_presentation_core",
+     ],
+-    cflags: ["-DNEO2_M4_LOADER_DIAGNOSTIC=1"],
++    cflags: ["-DNEO2_M4_ENGINE_LOADER_DIAGNOSTIC=1"],
+     cpp_std: "c++20",
+ }
+--- a/services/surfaceflinger/Neo2Eink/android/src/render_surface_capture_session.cpp
++++ b/services/surfaceflinger/Neo2Eink/android/src/render_surface_capture_session.cpp
+@@ -15,8 +15,8 @@
+ #include <chrono>
+ #include <atomic>
+-#if defined(NEO2_M4_LOADER_DIAGNOSTIC)
++#if defined(NEO2_M4_ENGINE_LOADER_DIAGNOSTIC)
+ #include <dlfcn.h>
+ #include <mutex>
+ #endif
+ #include <memory>
+ #include <utility>
+@@ -89,9 +89,9 @@ void RenderSurfaceCaptureSession::StartMetadataOnly() {
+   if (started_) {
+     return;
+   }
+   started_ = true;
+-#if defined(NEO2_M4_LOADER_DIAGNOSTIC)
++#if defined(NEO2_M4_ENGINE_LOADER_DIAGNOSTIC)
+   // Breadcrumb one can be early, so Capture() performs the actual probe.
+-  ALOGE("M4 loader diagnostic v2: StartMetadataOnly entered; probe deferred");
++  ALOGE("M4 engine loader diagnostic: StartMetadataOnly entered; probe deferred");
+ #endif
+ }
+@@ -124,6 +124,6 @@ void RenderSurfaceCaptureSession::Capture(
+-#if defined(NEO2_M4_LOADER_DIAGNOSTIC)
++#if defined(NEO2_M4_ENGINE_LOADER_DIAGNOSTIC)
+   // Breadcrumb two proves that the live Capture() path reached this gate.
+   static std::once_flag capture_breadcrumb_once;
+   std::call_once(capture_breadcrumb_once, [] {
+-    ALOGE("M4 loader diagnostic v2: Capture entered; waiting for verified geometry");
++    ALOGE("M4 engine loader diagnostic: Capture entered; waiting for verified geometry");
+   });
+@@ -131,20 +131,20 @@ void RenderSurfaceCaptureSession::Capture(
+   // The remaining breadcrumbs run only from the observed full-panel Capture
+-  // path. This loads no symbol and constructs no Sync object.
++  // path. It resolves no engine symbol, initializes no engine, and performs no output.
+   if (metadata->geometry_status == PanelGeometryStatus::kVerified) {
+-    static std::once_flag loader_probe_once;
+-    std::call_once(loader_probe_once, [] {
+-      ALOGE("M4 loader diagnostic v2: verified Capture reached; pre-dlopen");
++    static std::once_flag engine_loader_probe_once;
++    std::call_once(engine_loader_probe_once, [] {
++      ALOGE("M4 engine loader diagnostic: verified Capture reached; pre-dlopen");
+       static_cast<void>(dlerror());
+-      void* const handle = dlopen("libeinksfpatch.so", RTLD_NOW | RTLD_LOCAL);
++      void* const handle = dlopen("libidisplayengine.so", RTLD_NOW | RTLD_LOCAL);
+       const char* const error = dlerror();
+       if (handle == nullptr) {
+-        ALOGE("M4 loader diagnostic v2: libeinksfpatch dlopen failed: %s",
++        ALOGE("M4 engine loader diagnostic: libidisplayengine dlopen failed: %s",
+               error == nullptr ? "unknown linker error" : error);
+         return;
+       }
+       // Do not dlclose: opaque destructors/lifecycle are unrecovered.
+-      ALOGE("M4 loader diagnostic v2: libeinksfpatch dlopen succeeded; "
+-            "no vendor symbol, Sync object, controller, or output was used");
++      ALOGE("M4 engine loader diagnostic: libidisplayengine dlopen succeeded; "
++            "no engine symbol, initialization, controller, or output was used");
+     });
+   }
+ #endif

@@ -1,0 +1,18 @@
+--- a/services/surfaceflinger/CompositionEngine/Android.bp
++++ b/services/surfaceflinger/CompositionEngine/Android.bp
+@@ -91,6 +91,15 @@
+     cflags: [
+         "-DNEO2_EINK_METADATA_ONLY=1",
+         "-DNEO2_EINK_M3_CAPTURE_ONLY=1",
+     ],
++    // libcompositionengine has a secondary 32-bit variant while the retained
++    // RM06L engine library is strictly 64-bit. Select the M4 executor and
++    // its code path only for the actual 64-bit SurfaceFlinger variant.
++    target: {
++        android_arm64: {
++            whole_static_libs: ["libneo2_eink_lower_engine_backend"],
++            cflags: ["-DNEO2_EINK_M4_LOWER_ENGINE_OUTPUT=1"],
++        },
++    },
+     local_include_dirs: ["include"],
+     export_include_dirs: ["include"],

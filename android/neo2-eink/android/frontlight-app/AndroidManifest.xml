@@ -1,0 +1,21 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.neo2.controls">
+    <permission android:name="org.neo2.controls.permission.CONTROL_FRONTLIGHT"
+        android:protectionLevel="signature" />
+    <permission android:name="org.neo2.controls.permission.MANAGE_SLEEP_IMAGES"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="org.neo2.controls.permission.CONTROL_FRONTLIGHT" />
+    <uses-permission android:name="org.neo2.controls.permission.MANAGE_SLEEP_IMAGES" />
+    <application android:allowBackup="false" android:label="Neo2 Controls">
+        <activity android:name=".ControlsActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <service android:name=".SleepImageCatalogService"
+            android:directBootAware="true"
+            android:exported="true"
+            android:permission="org.neo2.controls.permission.MANAGE_SLEEP_IMAGES" />
+    </application>
+</manifest>

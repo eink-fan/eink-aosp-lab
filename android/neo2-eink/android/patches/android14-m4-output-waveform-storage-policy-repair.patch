@@ -1,0 +1,9 @@
+diff --git a/system/sepolicy/private/file.te b/system/sepolicy/private/file.te
+--- a/system/sepolicy/private/file.te
++++ b/system/sepolicy/private/file.te
+@@ -117,4 +117,5 @@
+ type neo2_eink_temper_info_sysfs, fs_type, sysfs_type, mlstrustedobject;
+ 
+ # The retained Zhangyue driver reads only these two RM06L raw partitions while
+ # loading waveform and token/VCOM metadata. This is not generic block access.
++type neo2_eink_waveform_storage_block_device, dev_type;

@@ -1,0 +1,106 @@
+diff --git a/private/file.te b/private/file.te
+index b832da4..f244f27 100644
+--- a/private/file.te
++++ b/private/file.te
+@@ -153,6 +153,30 @@
+ # /data/misc/surfaceflinger
+ type surfaceflinger_data_file, file_type, data_file_type, core_data_file_type;
+ 
++# Exact RM06L e-ink controller endpoints; no generic /dev access is implied.
++# This platform-private type is used only by SurfaceFlinger policy below.
++type neo2_eink_controller_device, dev_type;
++# One RM06L output-control sysfs attribute. This type is intentionally
++# separate from both generic sysfs and the e-ink controller character nodes.
++type neo2_eink_pix_fmt_sysfs, fs_type, sysfs_type, mlstrustedobject;
++
++# One RM06L calibration attribute read by the retained engine during startup.
++# It is deliberately separate from generic sysfs and remains read-only.
++type neo2_eink_vcom_sysfs, fs_type, sysfs_type, mlstrustedobject;
++
++# One RM06L waveform-temperature attribute. The retained engine opens it
++# write-only as part of its own LUT setup; it is not a general thermal node.
++type neo2_eink_temper_info_sysfs, fs_type, sysfs_type, mlstrustedobject;
++
++# The Neo 2's calibrated primary cool and warm front-light attributes. These
++# remain independent so no unrelated LED/sysfs controls are authorized.
++type neo2_frontlight_cool_sysfs, fs_type, sysfs_type, mlstrustedobject;
++type neo2_frontlight_warm_sysfs, fs_type, sysfs_type, mlstrustedobject;
++
++# The retained Zhangyue driver reads only these two RM06L raw partitions while
++# loading waveform and token/VCOM metadata. This is not generic block access.
++type neo2_eink_waveform_storage_block_device, dev_type;
++
+ # /data/per_boot
+ type per_boot_file, file_type, data_file_type, core_data_file_type;
+ 
+diff --git a/private/file_contexts b/private/file_contexts
+index bc79eeb..dc393ba 100644
+--- a/private/file_contexts
++++ b/private/file_contexts
+@@ -93,6 +93,10 @@
+ ##########################
+ # Devices
+ #
++/dev/swtcon_power_cdev  u:object_r:neo2_eink_controller_device:s0
++/dev/zhangyuecdev       u:object_r:neo2_eink_controller_device:s0
++/dev/block/mmcblk0p1    u:object_r:neo2_eink_waveform_storage_block_device:s0
++/dev/block/mmcblk0p2    u:object_r:neo2_eink_waveform_storage_block_device:s0
+ /dev(/.*)?		u:object_r:device:s0
+ /dev/adf[0-9]*		u:object_r:graphics_device:s0
+ /dev/adf-interface[0-9]*\.[0-9]*	u:object_r:graphics_device:s0
+diff --git a/private/genfs_contexts b/private/genfs_contexts
+index e25bb9b..52bd22b 100644
+--- a/private/genfs_contexts
++++ b/private/genfs_contexts
+@@ -131,6 +131,12 @@ genfscon sysfs /class/android_usb                 u:object_r:sysfs_android_usb:s
+ genfscon sysfs /class/extcon                      u:object_r:sysfs_extcon:s0
+ genfscon sysfs /class/gpu                         u:object_r:sysfs_gpu:s0
+ genfscon sysfs /class/leds                        u:object_r:sysfs_leds:s0
++# `/sys/eink/burn` is a symlink; match the kernel's canonical sysfs inode path.
++genfscon sysfs /devices/platform/soc/soc:mtk_ireader/pix_fmt u:object_r:neo2_eink_pix_fmt_sysfs:s0
++genfscon sysfs /devices/platform/soc/soc:mtk_ireader/vcomvalue u:object_r:neo2_eink_vcom_sysfs:s0
++genfscon sysfs /devices/platform/soc/soc:mtk_ireader/einktemperinfo u:object_r:neo2_eink_temper_info_sysfs:s0
++genfscon sysfs /devices/platform/11009000.i2c/i2c-2/2-0036/b_brightness u:object_r:neo2_frontlight_cool_sysfs:s0
++genfscon sysfs /devices/platform/11009000.i2c/i2c-2/2-0036/a_brightness u:object_r:neo2_frontlight_warm_sysfs:s0
+ genfscon sysfs /class/net                         u:object_r:sysfs_net:s0
+ genfscon sysfs /class/rfkill/rfkill0/state        u:object_r:sysfs_bluetooth_writable:s0
+ genfscon sysfs /class/rfkill/rfkill1/state        u:object_r:sysfs_bluetooth_writable:s0
+diff --git a/private/surfaceflinger.te b/private/surfaceflinger.te
+index f4f64ce..2349041 100644
+--- a/private/surfaceflinger.te
++++ b/private/surfaceflinger.te
+@@ -45,6 +45,34 @@ allow surfaceflinger sysfs_gpu:file r_file_perms;
+ allow surfaceflinger graphics_device:dir search;
+ allow surfaceflinger graphics_device:chr_file rw_file_perms;
+ 
++# Exact RM06L controller endpoints, intentionally not the generic device type.
++allow surfaceflinger neo2_eink_controller_device:chr_file rw_file_perms;
++
++# The retained engine opens only this attribute write-only during startup.
++# Do not replace this with an allow rule on generic sysfs.
++allow surfaceflinger neo2_eink_pix_fmt_sysfs:file { open write };
++
++# The direct engine reads the board-calibrated VCOM value; do not authorize
++# its separately exported setter or any generic sysfs access.
++allow surfaceflinger neo2_eink_vcom_sysfs:file { getattr open read };
++
++# The retained engine owns this selected-path LUT temperature write. Do not
++# replace it with access to generic thermal/sysfs attributes.
++allow surfaceflinger neo2_eink_temper_info_sysfs:file { open write };
++
++# Deliberately do not grant SurfaceFlinger front-light write access. SELinux
++# cannot express the runtime "armed" condition, so the public DSU profile
++# remains fail-closed even if an application or backend has a defect. A future
++# reviewed front-light design needs a separately confined, explicitly started
++# service rather than broadening this domain.
++
++# The kernel-owned waveform loader reads p1/p2 using the caller's credentials.
++# Keep this exact, read-only raw-block access separate from generic block_device.
++allow surfaceflinger neo2_eink_waveform_storage_block_device:blk_file { getattr open read };
++# Traverse the shared /dev/block directory to the two exact typed leaves only.
++allow surfaceflinger block_device:dir search;
++
++
+ # Access /dev/video1.
+ allow surfaceflinger video_device:dir r_dir_perms;
+ allow surfaceflinger video_device:chr_file rw_file_perms;

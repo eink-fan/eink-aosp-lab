@@ -1,0 +1,239 @@
+// Generated into Neo2Eink/android/vendor-runtime/ by
+// stage_m4_vendor_runtime_android14.sh. Do not put this file directly under a
+// normal M1–M3 source graft. The gated product include is the only path that
+// can install these private payload files; it remains off by default.
+
+// These untouched stock binaries deliberately retain their vendor DT_NEEDED
+// entries. The generic build cannot accurately declare that private closure as
+// ordinary AOSP shared_libs, so only Soong's declaration-consistency check is
+// disabled. Exact files and their loader inventory remain checksummed records.
+cc_defaults {
+    name: "neo2_stock_opaque_prebuilt_defaults",
+    check_elf_files: false,
+    strip: {
+        none: true,
+    },
+}
+
+// Exact stock waveform resources. Product gating selects these as data files;
+// their presence does not load or initialize the retained engine.
+prebuilt_etc {
+    name: "neo2_stock_default_wbf",
+    src: "vendor-runtime/waveforms/default_wbf.bin",
+    filename: "default_wbf.bin",
+}
+
+prebuilt_etc {
+    name: "neo2_stock_default_nm",
+    src: "vendor-runtime/waveforms/default_nm.bin",
+    filename: "default_nm.bin",
+}
+
+prebuilt_etc {
+    name: "neo2_stock_regal_wbf",
+    src: "vendor-runtime/waveforms/regal.wbf",
+    filename: "regal.wbf",
+}
+
+// The calibrated front-light policy and its endpoint names are an exact,
+// hash-locked restricted data payload. The Android controller remains
+// disarmed by default even when this file is present.
+prebuilt_etc {
+    name: "neo2_stock_frontlight_calibration",
+    src: "vendor-runtime/frontlight/neo2_frontlight_calibration.conf",
+    filename: "neo2_frontlight_calibration.conf",
+}
+
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_einksfpatch",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "libeinksfpatch",
+    srcs: ["vendor-runtime/libeinksfpatch.so"],
+    compile_multilib: "64",
+    installable: true,
+}
+
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_idisplayengine",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "libidisplayengine",
+    srcs: ["vendor-runtime/libidisplayengine.so"],
+    compile_multilib: "64",
+    installable: true,
+}
+
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_idisplayv3",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "libidisplayV3",
+    srcs: ["vendor-runtime/libidisplayV3.so"],
+    compile_multilib: "64",
+    installable: true,
+}
+
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_einkutils",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "libeinkutils",
+    srcs: ["vendor-runtime/libeinkutils.so"],
+    compile_multilib: "64",
+    installable: true,
+}
+
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_fbhandsurface",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "libfbhandsurface",
+    srcs: ["vendor-runtime/libfbhandsurface.so"],
+    compile_multilib: "64",
+    installable: true,
+}
+
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_einkpen",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "libeinkpen",
+    srcs: ["vendor-runtime/libeinkpen.so"],
+    compile_multilib: "64",
+    installable: true,
+}
+
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_einkskia",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "libeinkskia",
+    srcs: ["vendor-runtime/libeinkskia.so"],
+    compile_multilib: "64",
+    installable: true,
+}
+
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_eink",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "libeink",
+    srcs: ["vendor-runtime/libeink.so"],
+    compile_multilib: "64",
+    installable: true,
+}
+
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_eink_color",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "libeink_color",
+    srcs: ["vendor-runtime/libeink_color.so"],
+    compile_multilib: "64",
+    installable: true,
+}
+
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_eink_kaleido_render",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "libEink_Kaleido_render",
+    srcs: ["vendor-runtime/libEink_Kaleido_render.so"],
+    compile_multilib: "64",
+    installable: true,
+}
+
+// These are the exact stock system/system_ext closure files identified by the
+// read-only loader inventory. They are private same-build inputs, not AOSP or
+// VNDK interfaces. Only m4_vendor_runtime_payload.mk may select them.
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_eink_ed070kc4",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "libeink_ED070KC4",
+    srcs: ["vendor-runtime/payload-system/libeink_ED070KC4.so"],
+    compile_multilib: "64",
+}
+
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_eink_ed070kc5",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "libeink_ED070KC5",
+    srcs: ["vendor-runtime/payload-system/libeink_ED070KC5.so"],
+    compile_multilib: "64",
+}
+
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_einkinput",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "libeinkinput",
+    srcs: ["vendor-runtime/payload-system/libeinkinput.so"],
+    compile_multilib: "64",
+}
+
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_jpeg_oal",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "libJpegOal",
+    srcs: ["vendor-runtime/payload-system_ext/libJpegOal.so"],
+    compile_multilib: "64",
+    system_ext_specific: true,
+}
+
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_jpeg_alpha",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "libjpeg-alpha",
+    srcs: ["vendor-runtime/payload-system_ext/libjpeg-alpha.so"],
+    compile_multilib: "64",
+    system_ext_specific: true,
+}
+
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_jpeg_alpha_oal",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "libjpeg-alpha-oal",
+    srcs: ["vendor-runtime/payload-system_ext/libjpeg-alpha-oal.so"],
+    compile_multilib: "64",
+    system_ext_specific: true,
+}
+
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_mms_1_0",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "vendor.mediatek.hardware.mms@1.0",
+    srcs: ["vendor-runtime/payload-system_ext/vendor.mediatek.hardware.mms@1.0.so"],
+    compile_multilib: "64",
+    system_ext_specific: true,
+}
+
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_mms_1_1",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "vendor.mediatek.hardware.mms@1.1",
+    srcs: ["vendor-runtime/payload-system_ext/vendor.mediatek.hardware.mms@1.1.so"],
+    compile_multilib: "64",
+    system_ext_specific: true,
+}
+
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_mms_1_2",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "vendor.mediatek.hardware.mms@1.2",
+    srcs: ["vendor-runtime/payload-system_ext/vendor.mediatek.hardware.mms@1.2.so"],
+    compile_multilib: "64",
+    system_ext_specific: true,
+}
+
+cc_prebuilt_library_shared {
+    name: "libneo2_stock_mms_1_3",
+    defaults: ["neo2_stock_opaque_prebuilt_defaults"],
+    stem: "vendor.mediatek.hardware.mms@1.3",
+    srcs: ["vendor-runtime/payload-system_ext/vendor.mediatek.hardware.mms@1.3.so"],
+    compile_multilib: "64",
+    system_ext_specific: true,
+}
+
+cc_library_shared {
+    name: "libneo2_vendor_sync_link_probe",
+    defaults: ["libcompositionengine_defaults"],
+    srcs: ["vendor-runtime/vendor_sync_link_probe.cpp"],
+    whole_static_libs: [
+        "libneo2_eink_vendor_sync_backend",
+        "libneo2_eink_presentation_core",
+    ],
+    shared_libs: ["libneo2_stock_einksfpatch"],
+    compile_multilib: "64",
+    installable: false,
+    cpp_std: "c++20",
+}
