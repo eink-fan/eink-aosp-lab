@@ -6,6 +6,11 @@
 #include "neo2/eink/android_eink_pipeline.h"
 
 #include <eink_grayscale_fidelity.h>
+#include <eink_sleep_image_background.h>
+#include <eink_sleep_image_overlay.h>
+#include <eink_software_grayscale.h>
+
+#include <android-base/properties.h>
 
 #include <chrono>
 #include <cstdint>
@@ -21,6 +26,12 @@
 namespace neo2::eink::android {
 
 namespace {
+
+constexpr char kSleepCycleTraceProperty[] = "debug.neo2.eink.sleep_trace";
+
+bool SleepCycleTraceEnabled() {
+  return ::android::base::GetBoolProperty(kSleepCycleTraceProperty, false);
+}
 
 std::uint64_t FingerprintGrayscale(const OwnedGrayscaleBuffer& grayscale) {
   constexpr std::uint64_t kOffset = 1469598103934665603ULL;
@@ -74,6 +85,31 @@ void RecordDeltaDiagnostics(AndroidEinkPipeline::Diagnostics* diagnostics,
   }
 }
 
+void RecordTerminalBlackDiagnostics(AndroidEinkPipeline::Diagnostics* diagnostics,
+                                    TerminalBlackOutcome outcome) {
+  switch (outcome) {
+    case TerminalBlackOutcome::kCandidateReplaced:
+      ++diagnostics->terminal_black_candidates;
+      ++diagnostics->terminal_black_catalog_ready;
+      break;
+    case TerminalBlackOutcome::kCatalogMissingFallback:
+      ++diagnostics->terminal_black_candidates;
+      ++diagnostics->terminal_black_catalog_missing;
+      ++diagnostics->terminal_black_last_real_holds;
+      break;
+    case TerminalBlackOutcome::kDuplicateSuppressed:
+      ++diagnostics->terminal_black_candidates;
+      ++diagnostics->terminal_black_duplicate_suppressions;
+      ++diagnostics->sleep_image_suppressions;
+      break;
+    case TerminalBlackOutcome::kRearmed:
+      ++diagnostics->terminal_black_rearm_events;
+      break;
+    case TerminalBlackOutcome::kNone:
+      break;
+  }
+}
+
 }  // namespace
 
 class AndroidEinkPipeline::Impl {
@@ -99,11 +135,12 @@ class AndroidEinkPipeline::Impl {
   bool started = false;
   bool stopping = false;
   SleepImageLatch sleep_image_latch;
+  SleepImageBackground sleep_image_background{EinkSleepImageCatalog::kPanelWidth,
+                                               EinkSleepImageCatalog::kPanelHeight};
   std::shared_ptr<EinkSleepImageCatalog> sleep_image_catalog;
   std::uint64_t sleep_image_catalog_epoch = 0;
   std::size_t sleep_image_selected_index = 0;
-  std::uint64_t screen_off_epoch = 0;
-  bool screen_off_latched = false;
+  SleepImagePresentationMode sleep_image_mode = SleepImagePresentationMode::kOpaque;
 };
 
 AndroidEinkPipeline::AndroidEinkPipeline(
@@ -176,15 +213,21 @@ void AndroidEinkPipeline::ResetForSourceChange() {
   ++impl_->source_generation;
   impl_->pending.reset();
   impl_->reset_source_state = true;
+  impl_->sleep_image_background.Release();
 }
 
 EinkSleepImageCatalog::PublishResult AndroidEinkPipeline::PublishSleepImageCatalog(
         std::uint64_t epoch, int width, int height,
-        std::vector<EinkSleepImageCatalog::Entry> entries, std::size_t selected_index) {
+        std::vector<EinkSleepImageCatalog::Entry> entries, std::size_t selected_index,
+        SleepImagePresentationMode mode) {
   if (epoch == 0) return EinkSleepImageCatalog::PublishResult::kRejectedSelection;
   if (width != EinkSleepImageCatalog::kPanelWidth ||
       height != EinkSleepImageCatalog::kPanelHeight) {
     return EinkSleepImageCatalog::PublishResult::kRejectedGeometry;
+  }
+  if (mode != SleepImagePresentationMode::kOpaque &&
+      mode != SleepImagePresentationMode::kOverlay) {
+    return EinkSleepImageCatalog::PublishResult::kRejectedSelection;
   }
   auto catalog = std::make_shared<EinkSleepImageCatalog>(width, height);
   const EinkSleepImageCatalog::PublishResult result = catalog->Publish(std::move(entries));
@@ -193,31 +236,173 @@ EinkSleepImageCatalog::PublishResult AndroidEinkPipeline::PublishSleepImageCatal
     return EinkSleepImageCatalog::PublishResult::kRejectedSelection;
   }
   std::lock_guard lock(impl_->mutex);
-  if (impl_->stopping) return EinkSleepImageCatalog::PublishResult::kRejectedSelection;
+  if (impl_->stopping) {
+    return EinkSleepImageCatalog::PublishResult::kRejectedSelection;
+  }
+  // The framework producer only publishes validated awake-state callbacks.
+  // Reject stale or duplicate generations so a later Binder result cannot
+  // replace the prepublished selection in an already-consumed latch cycle.
+  if (epoch <= impl_->sleep_image_catalog_epoch) {
+    return EinkSleepImageCatalog::PublishResult::kRejectedSelection;
+  }
   impl_->sleep_image_catalog = std::move(catalog);
   impl_->sleep_image_catalog_epoch = epoch;
   impl_->sleep_image_selected_index = selected_index;
+  impl_->sleep_image_mode = mode;
+  impl_->diagnostics.sleep_image_mode = static_cast<std::uint8_t>(mode);
   return EinkSleepImageCatalog::PublishResult::kAccepted;
 }
 
-void AndroidEinkPipeline::SetScreenOffEpoch(std::uint64_t epoch) {
-  if (epoch == 0) return;
+SleepImageArmResult AndroidEinkPipeline::ArmSleepCycle(std::uint64_t epoch) {
   std::lock_guard lock(impl_->mutex);
-  if (impl_->stopping || epoch < impl_->screen_off_epoch) return;
-  impl_->screen_off_epoch = epoch;
-  impl_->screen_off_latched = true;
+  SleepImageArmResult result = SleepImageArmResult::kRejectedMismatched;
+  if (!impl_->stopping && epoch != 0 && epoch == impl_->sleep_image_catalog_epoch) {
+    result = impl_->sleep_image_latch.ArmSleepCycle(epoch);
+  }
+  if (result == SleepImageArmResult::kAccepted) {
+    ++impl_->diagnostics.sleep_cycle_arm_accepted;
+  } else {
+    ++impl_->diagnostics.sleep_cycle_arm_rejected;
+  }
+  impl_->diagnostics.sleep_cycle_active_epoch = impl_->sleep_image_latch.active_epoch();
+  if (SleepCycleTraceEnabled()) {
+    ALOGI("sleep_cycle_arm epoch=%llu result=%d active_epoch=%llu",
+          static_cast<unsigned long long>(epoch), static_cast<int>(result),
+          static_cast<unsigned long long>(impl_->sleep_image_latch.active_epoch()));
+  }
+  return result;
 }
 
-void AndroidEinkPipeline::SetScreenOnEpoch(std::uint64_t epoch) {
+SleepImagePresentationResult AndroidEinkPipeline::PresentSleepImage(std::uint64_t epoch) {
   std::lock_guard lock(impl_->mutex);
-  if (impl_->stopping || epoch == 0 || epoch != impl_->screen_off_epoch) return;
-  impl_->screen_off_latched = false;
+  const auto reject = [this](SleepImagePresentationResult result) {
+    ++impl_->diagnostics.sleep_image_present_rejected;
+    return result;
+  };
+  if (epoch == 0) return reject(SleepImagePresentationResult::kRejectedZero);
+  if (!impl_->started || impl_->stopping || !impl_->enabled) {
+    return reject(SleepImagePresentationResult::kRejectedUnavailable);
+  }
+  if (!impl_->sleep_image_catalog || epoch != impl_->sleep_image_catalog_epoch) {
+    return reject(SleepImagePresentationResult::kRejectedCatalog);
+  }
+  const SleepImageCandidate candidate =
+          impl_->sleep_image_catalog->CandidateAt(impl_->sleep_image_selected_index);
+  if (!candidate.buffer || candidate.width != EinkSleepImageCatalog::kPanelWidth ||
+      candidate.height != EinkSleepImageCatalog::kPanelHeight ||
+      candidate.buffer->ByteCount() != EinkSleepImageCatalog::kPanelBytes || !candidate.alpha ||
+      candidate.alpha->size() != EinkSleepImageCatalog::kPanelBytes) {
+    return reject(SleepImagePresentationResult::kRejectedCatalog);
+  }
+
+  std::shared_ptr<OwnedGrayscaleBuffer> presentation;
+  const std::span foreground(candidate.buffer->Data(), candidate.buffer->ByteCount());
+  const std::span alpha(*candidate.alpha);
+  if (impl_->sleep_image_mode == SleepImagePresentationMode::kOverlay) {
+    SleepImagePreparedOverlay prepared =
+            impl_->sleep_image_background.PrepareOverlay(foreground, alpha);
+    if (prepared.result == SleepImageOverlayPreparationResult::kRejectedNoBackground) {
+      ++impl_->diagnostics.sleep_overlay_no_background;
+      return reject(SleepImagePresentationResult::kRejectedBackground);
+    }
+    if (prepared.result != SleepImageOverlayPreparationResult::kComposited) {
+      ++impl_->diagnostics.sleep_overlay_invalid;
+      return reject(SleepImagePresentationResult::kRejectedAlpha);
+    }
+    ++impl_->diagnostics.sleep_overlay_composited;
+    presentation = std::make_shared<OwnedGrayscaleBuffer>(
+            candidate.width, candidate.height, std::move(prepared.panel_gray));
+  } else {
+    const std::vector<std::uint8_t> white(EinkSleepImageCatalog::kPanelBytes, 0xf0);
+    SleepImageOverlayOutput prepared = ComposeSleepImageOverlay(foreground, alpha, white);
+    if (prepared.result != SleepImageOverlayResult::kComposited) {
+      ++impl_->diagnostics.sleep_overlay_invalid;
+      return reject(SleepImagePresentationResult::kRejectedAlpha);
+    }
+    presentation = std::make_shared<OwnedGrayscaleBuffer>(
+            candidate.width, candidate.height, std::move(prepared.panel_gray));
+  }
+
+  const SleepImageArmResult arm = impl_->sleep_image_latch.ArmSleepCycle(epoch);
+  switch (arm) {
+    case SleepImageArmResult::kAccepted:
+      break;
+    case SleepImageArmResult::kRejectedZero:
+      return reject(SleepImagePresentationResult::kRejectedZero);
+    case SleepImageArmResult::kRejectedStale:
+      return reject(SleepImagePresentationResult::kRejectedStale);
+    case SleepImageArmResult::kRejectedDuplicate:
+      return reject(SleepImagePresentationResult::kRejectedDuplicate);
+    case SleepImageArmResult::kRejectedMismatched:
+      return reject(SleepImagePresentationResult::kRejectedMismatched);
+  }
+  const SleepImagePresentationResult begin = impl_->sleep_image_latch.BeginPresentation(epoch);
+  if (begin != SleepImagePresentationResult::kAccepted) return reject(begin);
+
+  // The lifecycle candidate supersedes every older capture that has not
+  // reached the serial adapter. An in-flight conversion observes the changed
+  // generation and discards its result before enqueue.
+  ++impl_->source_generation;
+  impl_->pending.reset();
+  const auto now = std::chrono::steady_clock::now();
+  Frame frame{
+          .sequence = impl_->next_sequence++,
+          .sleep_image_epoch = epoch,
+          .captured_at = now,
+          .enqueued_at = now,
+          .grayscale_buffer = std::move(presentation),
+          .dirty_rect = {.left = 0,
+                         .top = 0,
+                         .right = candidate.width,
+                         .bottom = candidate.height},
+          .engine_mode = engine_mode_,
+          .policy_flag = policy_flag_,
+  };
+  if (!adapter_.Enqueue(std::move(frame))) {
+    static_cast<void>(impl_->sleep_image_latch.DisarmSleepCycle(epoch));
+    return reject(SleepImagePresentationResult::kRejectedEnqueue);
+  }
+  ++impl_->diagnostics.sleep_image_present_accepted;
+  impl_->diagnostics.sleep_cycle_active_epoch = epoch;
+  impl_->diagnostics.sleep_cycle_last_enqueue_result = 1;
+  if (SleepCycleTraceEnabled()) {
+    ALOGI("sleep_image_present epoch=%llu result=accepted",
+          static_cast<unsigned long long>(epoch));
+  }
+  return SleepImagePresentationResult::kAccepted;
+}
+
+SleepImageDisarmResult AndroidEinkPipeline::DisarmSleepCycle(std::uint64_t epoch) {
+  std::lock_guard lock(impl_->mutex);
+  const SleepImageDisarmResult result = impl_->sleep_image_latch.DisarmSleepCycle(epoch);
+  if (result == SleepImageDisarmResult::kAccepted) {
+    static_cast<void>(adapter_.CancelPendingSleepImage(epoch));
+    if (impl_->sleep_image_background.available()) {
+      ++impl_->diagnostics.sleep_overlay_background_released;
+    }
+    impl_->sleep_image_background.Release();
+    impl_->reset_demand_gate = true;
+    ++impl_->diagnostics.sleep_cycle_disarm_accepted;
+  } else {
+    ++impl_->diagnostics.sleep_cycle_disarm_rejected;
+  }
+  impl_->diagnostics.sleep_cycle_active_epoch = impl_->sleep_image_latch.active_epoch();
+  if (SleepCycleTraceEnabled()) {
+    ALOGI("sleep_cycle_disarm epoch=%llu result=%d active_epoch=%llu",
+          static_cast<unsigned long long>(epoch), static_cast<int>(result),
+          static_cast<unsigned long long>(impl_->sleep_image_latch.active_epoch()));
+  }
+  return result;
 }
 
 void AndroidEinkPipeline::OnCapturedComposition(CapturedComposition composition) {
   {
     std::lock_guard lock(impl_->mutex);
     if (!impl_->started || impl_->stopping || !impl_->enabled) {
+      return;
+    }
+    if (impl_->sleep_image_latch.state() == SleepImageLatchState::kConsumed) {
+      ++impl_->diagnostics.sleep_image_capture_holds;
       return;
     }
     // Replace the oldest not-yet-converted composition. sp<> and Fence own
@@ -267,7 +452,16 @@ AndroidEinkPipeline::CaptureAdmissionState AndroidEinkPipeline::capture_admissio
 void AndroidEinkPipeline::OnEngineSubmission(
         const Frame& frame, bool accepted, std::chrono::steady_clock::duration submit_duration) {
   const auto submit_finish = std::chrono::steady_clock::now();
+  // Lifecycle paths take the pipeline lock before retaining or releasing page pixels. Preserve
+  // that order here so wake/reset cannot race a stale submission or deadlock with this callback.
   std::lock_guard lock(impl_->mutex);
+  const SleepImageBackgroundResult background =
+          impl_->sleep_image_background.ObserveSubmission(frame, accepted);
+  if (background == SleepImageBackgroundResult::kRetained) {
+    ++impl_->diagnostics.sleep_overlay_background_retained;
+  } else {
+    ++impl_->diagnostics.sleep_overlay_background_rejected;
+  }
   if (accepted) {
     ++impl_->diagnostics.submit_acceptances;
   } else {
@@ -288,6 +482,10 @@ void AndroidEinkPipeline::OnEngineSubmission(
     } else {
       ++impl_->diagnostics.normal_differential_rejected;
     }
+  }
+  if (SleepCycleTraceEnabled()) {
+    ALOGI("sleep_frame_lower sequence=%llu result=%s",
+          static_cast<unsigned long long>(frame.sequence), accepted ? "accepted" : "rejected");
   }
 }
 
@@ -387,19 +585,8 @@ void AndroidEinkPipeline::ConversionWorkerMain() {
       std::lock_guard lock(impl_->mutex);
       ++impl_->diagnostics.source_direct_selected;
     }
-    bool screen_off_latched = false;
-    std::uint64_t screen_off_epoch = 0;
-    std::uint64_t catalog_epoch = 0;
     std::size_t selected_index = 0;
     std::shared_ptr<EinkSleepImageCatalog> catalog;
-    {
-      std::lock_guard lock(impl_->mutex);
-      screen_off_latched = impl_->screen_off_latched;
-      screen_off_epoch = impl_->screen_off_epoch;
-      catalog_epoch = impl_->sleep_image_catalog_epoch;
-      selected_index = impl_->sleep_image_selected_index;
-      catalog = impl_->sleep_image_catalog;
-    }
     Frame sleep_frame{
             .sequence = sequence,
             .captured_at = composition->captured_at,
@@ -411,16 +598,46 @@ void AndroidEinkPipeline::ConversionWorkerMain() {
             .engine_mode = engine_mode_,
             .policy_flag = policy_flag_,
     };
-    SleepImageLatch::Selector sleep_selector;
-    if (catalog && catalog_epoch == screen_off_epoch) {
-      sleep_selector = [catalog = std::move(catalog), selected_index](int width, int height) {
-        const SleepImageCandidate candidate = catalog->CandidateAt(selected_index);
-        if (candidate.width != width || candidate.height != height) return SleepImageCandidate{};
-        return candidate;
-      };
+    SleepImageDecision sleep_decision = SleepImageDecision::kPassThrough;
+    TerminalBlackOutcome terminal_black_outcome = TerminalBlackOutcome::kNone;
+    SleepImageLatchState latch_state_before = SleepImageLatchState::kInactive;
+    SleepImageEvaluationSummary sleep_evaluation;
+    std::uint64_t sleep_cycle_epoch = 0;
+    {
+      std::lock_guard lock(impl_->mutex);
+      selected_index = impl_->sleep_image_selected_index;
+      catalog = impl_->sleep_image_catalog;
+      SleepImageLatch::Selector sleep_selector;
+      if (catalog) {
+        sleep_selector = [catalog = std::move(catalog), selected_index](int width, int height) {
+          const SleepImageCandidate candidate = catalog->CandidateAt(selected_index);
+          if (candidate.width != width || candidate.height != height) return SleepImageCandidate{};
+          return candidate;
+        };
+      }
+      latch_state_before = impl_->sleep_image_latch.state();
+      sleep_decision = impl_->sleep_image_latch.Evaluate(sleep_frame, sleep_selector);
+      sleep_evaluation = impl_->sleep_image_latch.last_evaluation();
+      terminal_black_outcome = impl_->sleep_image_latch.last_outcome();
+      RecordTerminalBlackDiagnostics(&impl_->diagnostics, terminal_black_outcome);
+      impl_->diagnostics.sleep_cycle_active_epoch = impl_->sleep_image_latch.active_epoch();
+      sleep_cycle_epoch = impl_->diagnostics.sleep_cycle_active_epoch;
+      impl_->diagnostics.sleep_cycle_last_conversion_sequence = sequence;
+      impl_->diagnostics.sleep_cycle_latch_state_before_decision =
+              static_cast<std::uint8_t>(latch_state_before);
+      impl_->diagnostics.sleep_cycle_last_decision = static_cast<std::uint8_t>(sleep_decision);
     }
-    const SleepImageDecision sleep_decision = impl_->sleep_image_latch.Evaluate(
-            sleep_frame, screen_off_latched, sleep_selector);
+    if (SleepCycleTraceEnabled() && sleep_evaluation.valid_full_frame) {
+      ALOGI("sleep_frame_evaluated sequence=%llu min=%u max=%u mean=%u threshold=%u "
+            "ready=%d holding=%d terminal_decision=%d",
+            static_cast<unsigned long long>(sequence),
+            static_cast<unsigned>(sleep_evaluation.minimum_gray),
+            static_cast<unsigned>(sleep_evaluation.maximum_gray),
+            static_cast<unsigned>(sleep_evaluation.mean_gray),
+            static_cast<unsigned>(sleep_evaluation.threshold), sleep_evaluation.ready,
+            sleep_evaluation.holding,
+            static_cast<int>(sleep_evaluation.decision));
+    }
     const std::uint64_t grayscale_hash = FingerprintGrayscale(*grayscale);
     const std::uint64_t capture_to_convert_ns =
             ToNanoseconds(conversion_finish - composition->captured_at);
@@ -456,12 +673,18 @@ void AndroidEinkPipeline::ConversionWorkerMain() {
       impl_->diagnostics.conversion_duration_max_ns =
               std::max(impl_->diagnostics.conversion_duration_max_ns, convert_ns);
       impl_->conversion_in_flight = false;
-      ++impl_->diagnostics.sleep_image_suppressions;
       RecordDeltaDiagnostics(&impl_->diagnostics, delta, delta_unavailable);
       impl_->diagnostics.latest_grayscale_hash = grayscale_hash;
       impl_->diagnostics.latest_grayscale_bytes = grayscale->Size();
       impl_->diagnostics.latest_convert_ns = ToNanoseconds(conversion_finish - conversion_start);
       impl_->diagnostics.latest_capture_to_convert_ns = capture_to_convert_ns;
+      impl_->diagnostics.sleep_cycle_last_enqueue_result = 2;
+      if (SleepCycleTraceEnabled()) {
+        ALOGI("sleep_cycle_decision epoch=%llu latch_before=%d decision=%d sequence=%llu enqueue=held",
+              static_cast<unsigned long long>(sleep_cycle_epoch),
+              static_cast<int>(latch_state_before), static_cast<int>(sleep_decision),
+              static_cast<unsigned long long>(sequence));
+      }
       continue;
     }
 
@@ -489,6 +712,9 @@ void AndroidEinkPipeline::ConversionWorkerMain() {
     const bool is_owned_snapshot = static_cast<bool>(composition->ownership_lease);
     Frame frame{
             .sequence = sequence,
+            .sleep_image_epoch = sleep_decision == SleepImageDecision::kReplace
+                    ? sleep_cycle_epoch
+                    : 0,
             .captured_at = composition->captured_at,
             .compose_buffer = is_owned_snapshot
                     ? nullptr
@@ -532,6 +758,7 @@ void AndroidEinkPipeline::ConversionWorkerMain() {
       } else {
         ++impl_->diagnostics.frames_enqueue_rejected;
       }
+      impl_->diagnostics.sleep_cycle_last_enqueue_result = enqueued ? 1 : 0;
       if (sleep_decision == SleepImageDecision::kReplace) {
         ++impl_->diagnostics.sleep_image_replacements;
       }
@@ -548,6 +775,12 @@ void AndroidEinkPipeline::ConversionWorkerMain() {
         case DemandDecision::kUnchanged:
           break;
       }
+    }
+    if (SleepCycleTraceEnabled()) {
+      ALOGI("sleep_cycle_decision epoch=%llu latch_before=%d decision=%d sequence=%llu enqueue=%d",
+            static_cast<unsigned long long>(sleep_cycle_epoch),
+            static_cast<int>(latch_state_before), static_cast<int>(sleep_decision),
+            static_cast<unsigned long long>(sequence), enqueued ? 1 : 0);
     }
     if (first_success) {
       ALOGI("M3 first panel-visible snapshot conversion complete: gray_bytes=%zu gray_fnv64=%016llx "

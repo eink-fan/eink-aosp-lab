@@ -86,9 +86,10 @@ class FakeEngine final : public Engine {
 };
 
 Frame MakeFrame(std::uint64_t sequence, const std::shared_ptr<Pixels>& pixels,
-                const std::shared_ptr<Buffer>& buffer) {
+                const std::shared_ptr<Buffer>& buffer, std::uint64_t sleep_image_epoch = 0) {
   return Frame{
       .sequence = sequence,
+      .sleep_image_epoch = sleep_image_epoch,
       .compose_buffer = buffer,
       .source_buffer = nullptr,
       .grayscale_buffer = pixels,
@@ -193,6 +194,13 @@ int main() {
   Require(retained_slot.has_retained_candidate && retained_slot.next_eligible.has_value(),
           "output slot did not expose the retained trailing candidate");
   Require(trailing_engine.WaitForCount(2), "trailing frame was not submitted without another event");
+  Require(trailing_adapter.Enqueue(MakeFrame(13, pixels, buffer, 9)),
+          "pending sleep image enqueue failed");
+  Require(trailing_adapter.CancelPendingSleepImage(9),
+          "matching pending sleep image was not cancelled");
+  Require(!trailing_adapter.CancelPendingSleepImage(9),
+          "sleep image cancellation succeeded twice");
+  std::this_thread::sleep_for(50ms);
   trailing_adapter.Stop();
   const auto trailing_submitted = trailing_engine.Submitted();
   Require(trailing_submitted.size() == 2 && trailing_submitted[1] == 12,
@@ -201,6 +209,8 @@ int main() {
   Require(trailing_diagnostics.trailing_deferred == 1 &&
                   trailing_diagnostics.trailing_submitted == 1,
           "trailing scheduler telemetry is wrong");
+  Require(trailing_diagnostics.pending_sleep_images_cancelled == 1,
+          "pending sleep-image cancellation telemetry is wrong");
   std::cout << "PASS\n";
   return 0;
 }

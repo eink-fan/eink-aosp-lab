@@ -18,7 +18,8 @@ void Require(bool condition, const char* message) {
 EinkSleepImageCatalog::Entry Entry(std::vector<std::uint8_t> pixels) {
   return {.width = EinkSleepImageCatalog::kPanelWidth,
           .height = EinkSleepImageCatalog::kPanelHeight,
-          .panel_gray = std::move(pixels)};
+          .panel_gray = std::move(pixels),
+          .alpha = std::vector<std::uint8_t>(EinkSleepImageCatalog::kPanelBytes, 255)};
 }
 
 std::vector<std::uint8_t> Panel(std::uint8_t gray) {
@@ -41,6 +42,11 @@ int main() {
   Require(catalog.Publish({Entry(std::move(short_panel))}) ==
                   EinkSleepImageCatalog::PublishResult::kRejectedBytes,
           "short entry was accepted");
+  auto short_alpha = Entry(Panel(0x10));
+  short_alpha.alpha.pop_back();
+  Require(catalog.Publish({std::move(short_alpha)}) ==
+                  EinkSleepImageCatalog::PublishResult::kRejectedAlphaBytes,
+          "short alpha plane was accepted");
   auto invalid_gray = Panel(0x10);
   invalid_gray[0] = 0x21;
   Require(catalog.Publish({Entry(std::move(invalid_gray))}) ==
@@ -70,7 +76,9 @@ int main() {
                   selected.height == EinkSleepImageCatalog::kPanelHeight,
           "valid candidate was not returned");
   Require(selected.buffer->ByteCount() == EinkSleepImageCatalog::kPanelBytes &&
-                  selected.buffer->Data()[0] == 0x10,
+                  selected.buffer->Data()[0] == 0x10 && selected.alpha &&
+                  selected.alpha->size() == EinkSleepImageCatalog::kPanelBytes &&
+                  (*selected.alpha)[0] == 255,
           "published catalog did not retain its owned bytes");
   Require(!catalog.CandidateAt(2).buffer, "out-of-range candidate did not fail closed");
   catalog.Clear();

@@ -7,6 +7,7 @@
 #include <eink_frame_demand_gate.h>
 #include <eink_grayscale_delta.h>
 #include <eink_presentation_adapter.h>
+#include <eink_sleep_image_latch.h>
 
 #include <ui/GraphicBuffer.h>
 
@@ -122,8 +123,35 @@ class AndroidEinkPipeline final : public CaptureSink {
     std::uint64_t latest_engine_submit_ns = 0;
     std::uint64_t latest_enqueue_to_submit_ns = 0;
     std::uint64_t latest_capture_to_submit_ns = 0;
+    std::uint64_t terminal_black_candidates = 0;
     std::uint64_t sleep_image_replacements = 0;
     std::uint64_t sleep_image_suppressions = 0;
+    // Legacy diagnostics field name retained for periodic-format compatibility.
+    // It now counts black pass-through fallbacks, never last-real-frame holds.
+    std::uint64_t terminal_black_last_real_holds = 0;
+    std::uint64_t terminal_black_duplicate_suppressions = 0;
+    std::uint64_t terminal_black_rearm_events = 0;
+    std::uint64_t terminal_black_catalog_ready = 0;
+    std::uint64_t terminal_black_catalog_missing = 0;
+    std::uint64_t sleep_cycle_arm_accepted = 0;
+    std::uint64_t sleep_cycle_arm_rejected = 0;
+    std::uint64_t sleep_cycle_disarm_accepted = 0;
+    std::uint64_t sleep_cycle_disarm_rejected = 0;
+    std::uint64_t sleep_image_present_accepted = 0;
+    std::uint64_t sleep_image_present_rejected = 0;
+    std::uint64_t sleep_image_capture_holds = 0;
+    std::uint64_t sleep_overlay_background_retained = 0;
+    std::uint64_t sleep_overlay_background_rejected = 0;
+    std::uint64_t sleep_overlay_composited = 0;
+    std::uint64_t sleep_overlay_no_background = 0;
+    std::uint64_t sleep_overlay_invalid = 0;
+    std::uint64_t sleep_overlay_background_released = 0;
+    std::uint64_t sleep_cycle_active_epoch = 0;
+    std::uint64_t sleep_cycle_last_conversion_sequence = 0;
+    std::uint8_t sleep_cycle_latch_state_before_decision = 0;
+    std::uint8_t sleep_cycle_last_decision = 0;
+    std::uint8_t sleep_cycle_last_enqueue_result = 0;
+    std::uint8_t sleep_image_mode = 1;
   };
 
   struct CaptureAdmissionState {
@@ -157,15 +185,18 @@ class AndroidEinkPipeline final : public CaptureSink {
   // caller must discard the transition capture itself.
   void ResetForSourceChange();
 
-  // These methods are called by a future SurfaceFlinger-private endpoint,
-  // never by the composition thread. The framework mediator selects the
-  // catalog index once for an authoritative screen-off epoch; this pipeline
-  // only retains copied panel-gray bytes and applies the portable latch.
+  // This method is called by the private endpoint, never by the composition
+  // thread. The framework refreshes a validated selected catalog while awake;
+  // the pipeline retains only copied panel-gray bytes for the data-plane latch.
   [[nodiscard]] EinkSleepImageCatalog::PublishResult PublishSleepImageCatalog(
           std::uint64_t epoch, int width, int height,
-          std::vector<EinkSleepImageCatalog::Entry> entries, std::size_t selected_index);
-  void SetScreenOffEpoch(std::uint64_t epoch);
-  void SetScreenOnEpoch(std::uint64_t epoch);
+          std::vector<EinkSleepImageCatalog::Entry> entries, std::size_t selected_index,
+          SleepImagePresentationMode mode);
+  // These carry only an epoch already accepted by PublishSleepImageCatalog.
+  // They cannot fetch, publish, select, or replace catalog data.
+  [[nodiscard]] SleepImageArmResult ArmSleepCycle(std::uint64_t epoch);
+  [[nodiscard]] SleepImagePresentationResult PresentSleepImage(std::uint64_t epoch);
+  [[nodiscard]] SleepImageDisarmResult DisarmSleepCycle(std::uint64_t epoch);
 
   // CaptureSink implementation. This performs only reference/fence handoff
   // and a short mutex acquisition; it never waits on the composition thread.

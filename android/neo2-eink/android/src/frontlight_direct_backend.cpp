@@ -274,7 +274,7 @@ bool FrontLightDirectBackend::Poll() {
 
   const auto& payload = *impl_->payload;
   // Retained capture-side observation is permanently disarmed. The
-  // process-lifetime Binder service below is the sole B013 write route.
+  // process-lifetime Binder service below is the sole direct write route.
   const DebugRequest request{.cold_code = 0, .warm_code = 0,
                              .warm_percentage = payload.warm_percentage, .write_armed = false};
   impl_->diagnostics.write_armed = request.write_armed;

@@ -1,0 +1,23 @@
+# Public source history
+
+## Unreleased source refresh
+
+- Harden sleep-image lifecycle delivery, shared-memory ownership, and
+  terminal-frame ordering.
+- Add bounded, generation-checked catalog storage with exact preview and
+  cancellation-before-publication semantics.
+- Add opaque and alpha-overlay presentation using owned, validated panel
+  planes and the latest accepted ordinary full-panel background.
+- Make portrait presentation to panel-native orientation explicit and use the
+  inverse transform for thumbnails and previews.
+- Add optional observation of a locally produced reader-cover file without
+  retaining its encoded bytes or source location in the catalog.
+- Replace the development fallback artwork with a deterministic source-built
+  fallback so the public tree carries no binary image fixture.
+- Add host contracts for storage recovery, bounded decode planning, overlay
+  composition, lifecycle ordering, diagnostics privacy, and shared-memory
+  sizing.
+
+This is a source release, not a device image or daily-driver qualification.
+The pinned public Android profile retains its fail-closed front-light boundary
+and does not claim that every reference component is enabled in its build.

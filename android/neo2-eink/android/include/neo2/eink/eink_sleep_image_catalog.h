@@ -18,6 +18,7 @@ class EinkSleepImageCatalog final {
     int width = 0;
     int height = 0;
     std::vector<std::uint8_t> panel_gray;
+    std::vector<std::uint8_t> alpha;
   };
 
   enum class PublishResult : std::uint8_t {
@@ -27,6 +28,7 @@ class EinkSleepImageCatalog final {
     kRejectedGeometry,
     kRejectedBytes,
     kRejectedPanelGray,
+    kRejectedAlphaBytes,
     kRejectedSelection,
   };
 
@@ -35,7 +37,14 @@ class EinkSleepImageCatalog final {
   static constexpr std::size_t kPanelBytes =
           static_cast<std::size_t>(kPanelWidth) * static_cast<std::size_t>(kPanelHeight);
   static constexpr std::size_t kMaximumEntries = 8;
-  static constexpr std::size_t kMaximumCatalogBytes = kMaximumEntries * kPanelBytes;
+  static constexpr std::size_t kMaximumCatalogBytes = kMaximumEntries * kPanelBytes * 2;
+
+  // The Binder ingress must accept exactly one native panel-gray allocation.
+  // Keeping the predicate portable lets host tests cover the boundary decision
+  // without pretending to compile Android's shared-memory API off-target.
+  [[nodiscard]] static constexpr bool IsPanelByteSize(std::size_t byte_count) {
+    return byte_count == kPanelBytes;
+  }
 
   EinkSleepImageCatalog(int expected_width, int expected_height);
 

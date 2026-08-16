@@ -86,6 +86,16 @@ bool PresentationAdapter::Enqueue(Frame frame) {
   return true;
 }
 
+bool PresentationAdapter::CancelPendingSleepImage(std::uint64_t epoch) {
+  if (epoch == 0) return false;
+  std::lock_guard lock(impl_->mutex);
+  if (!impl_->pending || impl_->pending->sleep_image_epoch != epoch) return false;
+  impl_->pending.reset();
+  impl_->pending_is_trailing = false;
+  ++impl_->diagnostics.pending_sleep_images_cancelled;
+  return true;
+}
+
 PresentationAdapter::Diagnostics PresentationAdapter::diagnostics() const {
   std::lock_guard lock(impl_->mutex);
   return impl_->diagnostics;

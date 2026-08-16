@@ -4,6 +4,8 @@
 #include "neo2/eink/eink_sleep_image_catalog.h"
 #include "neo2/eink/render_surface_capture.h"
 
+#include <eink_sleep_image_latch.h>
+
 #include <renderengine/RenderEngine.h>
 
 #include <chrono>
@@ -19,6 +21,7 @@ namespace neo2::eink::android {
 // intentionally independent of logcat's rolling buffer and never exposes
 // pixels, calibration data, endpoint paths, or requested/resolved light codes.
 [[nodiscard]] std::string GetNeo2EinkDiagnosticsSnapshot();
+[[nodiscard]] std::string GetNeo2EinkFreshDiagnosticsSnapshot();
 
 // SurfaceFlinger-owned, metadata-only session for the first same-version
 // integration. It neither starts workers nor maps pixels, so no vendor e-ink
@@ -49,9 +52,14 @@ class RenderSurfaceCaptureSession final {
   // perform a Binder request, file operation, or image decode on Capture().
   [[nodiscard]] EinkSleepImageCatalog::PublishResult PublishSleepImageCatalog(
           std::uint64_t epoch, int width, int height,
-          std::vector<EinkSleepImageCatalog::Entry> entries, std::size_t selected_index);
-  void SetScreenOffEpoch(std::uint64_t epoch);
-  void SetScreenOnEpoch(std::uint64_t epoch);
+          std::vector<EinkSleepImageCatalog::Entry> entries, std::size_t selected_index,
+          SleepImagePresentationMode mode);
+  [[nodiscard]] SleepImageArmResult ArmSleepCycle(std::uint64_t epoch);
+  [[nodiscard]] SleepImagePresentationResult PresentSleepImage(std::uint64_t epoch);
+  [[nodiscard]] SleepImageDisarmResult DisarmSleepCycle(std::uint64_t epoch);
+  // A debug-only caller obtains current aggregate counters through this pure
+  // observation method; it does not capture, publish, arm, or submit output.
+  [[nodiscard]] std::string FreshDiagnosticsSnapshot() const;
 
   // Safe at the RenderSurface queueBuffer seam. It passes the texture through
   // a synchronous metadata sink and does not map or retain pixel content.

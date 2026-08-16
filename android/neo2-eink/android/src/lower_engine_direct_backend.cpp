@@ -39,9 +39,8 @@ constexpr int kObservedUpdateAcceptedResult = -3;
 // cadence floor prevents a high-rate panel loop in either mode.
 constexpr std::uint64_t kM4DefaultSubmissionLimit = 12;
 constexpr std::uint64_t kM4HardSubmissionLimit = 24;
-constexpr int kM4DefaultMinimumIntervalMs = 100;
-// Android 17's reader default is a 100-ms cadence while retaining the 50-ms
-// lower bound for deliberately supervised stress experiments. The lower
+constexpr int kM4DefaultMinimumIntervalMs = 50;
+// Android 17's reader default is the already tested 50-ms safety floor. The
 // engine still owns waveform work; this is an output-rate floor, never a
 // panel-completion claim.
 constexpr int kM4MinimumIntervalMs = 50;
@@ -67,6 +66,14 @@ constexpr char kTemperatureInfo[] = "/dev/einktemperinfo";
 constexpr char kWaveformBlockDevice[] = "/dev/block/mmcblk0p1";
 constexpr char kTokenBlockDevice[] = "/dev/block/mmcblk0p2";
 constexpr char kBridgeProperty[] = "ro.eink.fpga.bridge.support";
+
+constexpr int NormalizeMinimumIntervalMs(int configured) {
+  return std::clamp(configured, kM4MinimumIntervalMs, kM4MaximumIntervalMs);
+}
+
+static_assert(NormalizeMinimumIntervalMs(kM4DefaultMinimumIntervalMs) == 50);
+static_assert(NormalizeMinimumIntervalMs(49) == 50);
+static_assert(NormalizeMinimumIntervalMs(250) == 250);
 
 // This is the retained engine's C layout, not ui::Rect. The observed normal
 // ed060kc1 producer passes a zeroed instance rather than a 1448x1072 Rect.
@@ -171,24 +178,29 @@ std::uint64_t LowerEngineDirectBackend::ActiveSubmissionLimit() {
 }
 
 bool LowerEngineDirectBackend::ContinuousModeEnabled() {
-  // A physical-panel guest is bounded by default. An operator must explicitly
-  // opt in to continuous submission after boot and only for supervised work.
-  return ::android::base::GetBoolProperty(kM4ContinuousProperty, false);
+  // The temporary DSU presenter is meant to stay live while its demand gate is
+  // being developed. Operators can still set this to 0 to restore the finite
+  // diagnostic budget immediately.
+  return ::android::base::GetBoolProperty(kM4ContinuousProperty, true);
 }
 
 bool LowerEngineDirectBackend::PresentationEnabled() {
-  // The full-binding profile has already cleared its matching-runtime
-  // integration gate, so its presenter starts enabled in every build variant.
-  // An operator can still set this volatile property to 0 to disarm it for a
-  // capture-only diagnostic boot; reboot restores the profile default.
-  return ::android::base::GetBoolProperty(kM4EnabledProperty, true);
+  // R2 starts capture-only. An operator must deliberately arm the existing
+  // volatile control after clean guest ADB evidence before this private engine
+  // can initialize or accept a frame. R4 keeps a rootable diagnostic guest
+  // convenient to inspect: only when the property is absent, a debuggable
+  // build defaults armed. An explicit 0 remains a hard disarm, and a
+  // production user build retains the former disarmed default.
+  if (::android::base::GetProperty(kM4EnabledProperty, "").empty()) {
+    return ::android::base::GetBoolProperty("ro.debuggable", false);
+  }
+  return ::android::base::GetBoolProperty(kM4EnabledProperty, false);
 }
 
 std::chrono::milliseconds LowerEngineDirectBackend::MinimumSubmissionInterval() {
   const int configured = ::android::base::GetIntProperty(kM4MinimumIntervalProperty,
                                                           kM4DefaultMinimumIntervalMs);
-  return std::chrono::milliseconds(
-          std::clamp(configured, kM4MinimumIntervalMs, kM4MaximumIntervalMs));
+  return std::chrono::milliseconds(NormalizeMinimumIntervalMs(configured));
 }
 
 std::chrono::milliseconds LowerEngineDirectBackend::CompletionObservationInterval() {
@@ -290,7 +302,7 @@ bool LowerEngineDirectBackend::Submit(const Frame& frame) {
   // M4 normally remains continuous while the demand gate is being developed.
   // An operator may set debug.neo2.eink.continuous=0 in this temporary guest
   // to restore the finite 24-submission diagnostic budget immediately. The
-  // 100-ms--5-second output-rate clamp remains
+  // 50-ms--5-second output-rate clamp remains
   // in force in both modes. It is a queue-attempt control, not a claimed
   // physical-completion signal.
   if (!ContinuousModeEnabled() && impl_->diagnostics.submissions >= kM4HardSubmissionLimit) {

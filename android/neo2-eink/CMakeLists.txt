@@ -25,7 +25,9 @@ add_library(eink_presentation_adapter
     src/eink_policy.cpp
     src/eink_presentation_arm_gate.cpp
     src/eink_snapshot_pool.cpp
+    src/eink_sleep_image_background.cpp
     src/eink_sleep_image_latch.cpp
+    src/eink_sleep_image_overlay.cpp
     src/eink_submission_observer.cpp
     src/neo2_panel_geometry_gate.cpp
     android/src/eink_sleep_image_catalog.cpp
@@ -39,6 +41,35 @@ target_link_libraries(eink_presentation_adapter_test PRIVATE eink_presentation_a
 target_compile_options(eink_presentation_adapter_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 enable_testing()
+add_test(NAME eink_sleep_image_binder_service_contract_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/eink_sleep_image_binder_service_contract_test.sh)
+add_test(NAME eink_sleep_image_direct_presentation_contract_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/eink_sleep_image_direct_presentation_contract_test.sh)
+add_test(NAME eink_sleep_image_overlay_contract_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/eink_sleep_image_overlay_contract_test.sh)
+add_test(NAME sleep_image_catalog_contract_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/sleep_image_catalog_contract_test.sh)
+find_program(NEO2_JAVAC_EXECUTABLE javac)
+find_program(NEO2_JAVA_EXECUTABLE java)
+if(NEO2_JAVAC_EXECUTABLE AND NEO2_JAVA_EXECUTABLE)
+  execute_process(COMMAND ${NEO2_JAVA_EXECUTABLE} -version
+                  RESULT_VARIABLE NEO2_JAVA_RUNTIME_RESULT
+                  OUTPUT_QUIET ERROR_QUIET)
+  if(NEO2_JAVA_RUNTIME_RESULT EQUAL 0)
+    add_test(NAME sleep_image_catalog_host_test
+             COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/sleep_image_catalog_host_test.sh)
+  endif()
+endif()
+add_test(NAME eink_terminal_black_data_plane_contract_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/eink_terminal_black_data_plane_contract_test.sh)
+add_test(NAME eink_sleep_image_lifecycle_contract_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/eink_sleep_image_lifecycle_contract_test.sh)
+add_executable(eink_sleep_image_shared_memory_size_test
+    tests/eink_sleep_image_shared_memory_size_test.cpp)
+target_link_libraries(eink_sleep_image_shared_memory_size_test PRIVATE eink_presentation_adapter)
+target_compile_options(eink_sleep_image_shared_memory_size_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME eink_sleep_image_shared_memory_size_test
+         COMMAND eink_sleep_image_shared_memory_size_test)
 add_test(NAME eink_presentation_adapter_test COMMAND eink_presentation_adapter_test)
 
 add_executable(eink_capture_admission_policy_test tests/eink_capture_admission_policy_test.cpp)
@@ -159,7 +190,22 @@ target_link_libraries(eink_sleep_image_latch_test PRIVATE eink_presentation_adap
 target_compile_options(eink_sleep_image_latch_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
 add_test(NAME eink_sleep_image_latch_test COMMAND eink_sleep_image_latch_test)
 
+add_executable(eink_sleep_image_overlay_test tests/eink_sleep_image_overlay_test.cpp)
+target_link_libraries(eink_sleep_image_overlay_test PRIVATE eink_presentation_adapter)
+target_compile_options(eink_sleep_image_overlay_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME eink_sleep_image_overlay_test COMMAND eink_sleep_image_overlay_test)
+
+add_executable(eink_sleep_image_background_test tests/eink_sleep_image_background_test.cpp)
+target_link_libraries(eink_sleep_image_background_test PRIVATE eink_presentation_adapter)
+target_compile_options(eink_sleep_image_background_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+add_test(NAME eink_sleep_image_background_test COMMAND eink_sleep_image_background_test)
+
 add_executable(eink_sleep_image_catalog_test tests/eink_sleep_image_catalog_test.cpp)
 target_link_libraries(eink_sleep_image_catalog_test PRIVATE eink_presentation_adapter)
 target_compile_options(eink_sleep_image_catalog_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
 add_test(NAME eink_sleep_image_catalog_test COMMAND eink_sleep_image_catalog_test)
+
+add_test(
+    NAME eink_diagnostics_format_contract_test
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/eink_diagnostics_format_contract_test.sh
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/src/render_surface_capture_session.cpp)

@@ -46,6 +46,7 @@ constexpr std::size_t kM3SnapshotSlots = 2;
 constexpr char kLateSampleWindowProperty[] = "debug.neo2.eink.late_sample_window_ms";
 constexpr char kR1SourceProperty[] = "debug.neo2.eink.r1_source";
 constexpr char kR1SourceAuditProperty[] = "debug.neo2.eink.r1_source_audit";
+constexpr char kSleepCycleTraceProperty[] = "debug.neo2.eink.sleep_trace";
 constexpr auto kR1SourceFenceWait = std::chrono::milliseconds(25);
 
 enum class R1SourceMode : std::uint8_t {
@@ -55,6 +56,8 @@ enum class R1SourceMode : std::uint8_t {
 
 std::mutex g_snapshot_mutex;
 std::string g_snapshot = "neo2_eink_diagnostics unavailable\n";
+std::mutex g_fresh_snapshot_session_mutex;
+RenderSurfaceCaptureSession* g_fresh_snapshot_session = nullptr;
 
 void PublishSnapshot(const std::string& snapshot) {
   std::lock_guard lock(g_snapshot_mutex);
@@ -156,6 +159,18 @@ std::string GetNeo2EinkDiagnosticsSnapshot() {
   return g_snapshot;
 }
 
+std::string GetNeo2EinkFreshDiagnosticsSnapshot() {
+  // This process-private entry point is for a privileged debug collector. A
+  // fresh observation remains disabled unless trace diagnostics are explicitly
+  // enabled, and it never changes the cached periodic line or pipeline state.
+  if (!::android::base::GetBoolProperty(kSleepCycleTraceProperty, false)) {
+    return "neo2_eink_diagnostics_fresh disabled\n";
+  }
+  std::lock_guard lock(g_fresh_snapshot_session_mutex);
+  return g_fresh_snapshot_session ? g_fresh_snapshot_session->FreshDiagnosticsSnapshot()
+                                  : "neo2_eink_diagnostics_fresh unavailable\n";
+}
+
 class RenderSurfaceCaptureSession::M3State final {
  public:
   struct SleepImageCatalogRequest {
@@ -164,6 +179,7 @@ class RenderSurfaceCaptureSession::M3State final {
     int height = 0;
     std::vector<EinkSleepImageCatalog::Entry> entries;
     std::size_t selected_index = 0;
+    SleepImagePresentationMode mode = SleepImagePresentationMode::kOpaque;
   };
 
 #if defined(NEO2_EINK_M4_LOWER_ENGINE_OUTPUT)
@@ -223,8 +239,19 @@ class RenderSurfaceCaptureSession::M3State final {
   bool setup_failed = false;
   std::mutex sleep_image_mutex;
   std::optional<SleepImageCatalogRequest> pending_sleep_image_catalog;
-  std::uint64_t screen_off_epoch = 0;
-  bool screen_off_latched = false;
+  std::optional<std::uint64_t> pending_sleep_cycle_arm;
+  std::uint64_t sleep_image_catalog_epoch = 0;
+  std::uint64_t sleep_image_last_arm_epoch = 0;
+  std::uint64_t sleep_image_catalog_accepted = 0;
+  std::uint64_t sleep_image_catalog_rejected = 0;
+  std::uint64_t sleep_image_candidate_selections = 0;
+  std::uint64_t sleep_cycle_arm_dispatches = 0;
+  std::uint64_t sleep_cycle_arm_accepted = 0;
+  std::uint64_t sleep_cycle_arm_rejected = 0;
+  std::uint64_t sleep_cycle_disarm_dispatches = 0;
+  std::uint64_t sleep_cycle_disarm_accepted = 0;
+  std::uint64_t sleep_cycle_disarm_rejected = 0;
+  std::atomic_bool sleep_image_diagnostics_dirty = false;
 };
 
 RenderSurfaceCaptureSession::RenderSurfaceCaptureSession() : capture_(sink_) {}
@@ -234,10 +261,16 @@ RenderSurfaceCaptureSession::RenderSurfaceCaptureSession(
         std::uint32_t height, CompositeRequest request_composite)
     : capture_(sink_), render_engine_(&render_engine), expected_width_(width), expected_height_(height),
       request_composite_(std::move(request_composite)), m3_(std::make_unique<M3State>()) {
+  std::lock_guard lock(g_fresh_snapshot_session_mutex);
+  g_fresh_snapshot_session = this;
   RegisterSleepImageCaptureSession(this);
 }
 
 RenderSurfaceCaptureSession::~RenderSurfaceCaptureSession() {
+  {
+    std::lock_guard lock(g_fresh_snapshot_session_mutex);
+    if (g_fresh_snapshot_session == this) g_fresh_snapshot_session = nullptr;
+  }
   UnregisterSleepImageCaptureSession(this);
   Stop();
 }
@@ -250,14 +283,12 @@ void RenderSurfaceCaptureSession::StartMetadataOnly() {
 }
 
 void RenderSurfaceCaptureSession::Stop() {
-  if (!started_) {
-    return;
-  }
   if (m3_ && m3_->resample_bridge) m3_->resample_bridge->Cancel();
   if (m3_) {
     std::shared_ptr<AndroidEinkPipeline> pipeline;
     {
       std::lock_guard lock(m3_->sleep_image_mutex);
+      if (!started_) return;
       pipeline = std::move(m3_->pipeline);
       m3_->snapshot_pool.reset();
     }
@@ -268,11 +299,16 @@ void RenderSurfaceCaptureSession::Stop() {
 
 EinkSleepImageCatalog::PublishResult RenderSurfaceCaptureSession::PublishSleepImageCatalog(
         std::uint64_t epoch, int width, int height,
-        std::vector<EinkSleepImageCatalog::Entry> entries, std::size_t selected_index) {
+        std::vector<EinkSleepImageCatalog::Entry> entries, std::size_t selected_index,
+        SleepImagePresentationMode mode) {
   if (!m3_ || epoch == 0) return EinkSleepImageCatalog::PublishResult::kRejectedSelection;
   if (width != EinkSleepImageCatalog::kPanelWidth ||
       height != EinkSleepImageCatalog::kPanelHeight) {
     return EinkSleepImageCatalog::PublishResult::kRejectedGeometry;
+  }
+  if (mode != SleepImagePresentationMode::kOpaque &&
+      mode != SleepImagePresentationMode::kOverlay) {
+    return EinkSleepImageCatalog::PublishResult::kRejectedSelection;
   }
   EinkSleepImageCatalog validation_catalog(width, height);
   const auto validation = validation_catalog.Publish(entries);
@@ -281,9 +317,26 @@ EinkSleepImageCatalog::PublishResult RenderSurfaceCaptureSession::PublishSleepIm
     return EinkSleepImageCatalog::PublishResult::kRejectedSelection;
   }
   std::lock_guard lock(m3_->sleep_image_mutex);
+  // The framework only publishes validated provider callbacks while awake.
+  // Reject stale generations so an older Binder result cannot replace the
+  // catalog retained for the next terminal-black data-plane cycle.
+  if (epoch <= m3_->sleep_image_catalog_epoch) {
+    ++m3_->sleep_image_catalog_rejected;
+    m3_->sleep_image_diagnostics_dirty.store(true);
+    return EinkSleepImageCatalog::PublishResult::kRejectedSelection;
+  }
   if (m3_->pipeline) {
-    return m3_->pipeline->PublishSleepImageCatalog(epoch, width, height, std::move(entries),
-                                                    selected_index);
+    const auto result = m3_->pipeline->PublishSleepImageCatalog(
+            epoch, width, height, std::move(entries), selected_index, mode);
+    if (result == EinkSleepImageCatalog::PublishResult::kAccepted) {
+      m3_->sleep_image_catalog_epoch = epoch;
+      ++m3_->sleep_image_catalog_accepted;
+      ++m3_->sleep_image_candidate_selections;
+    } else {
+      ++m3_->sleep_image_catalog_rejected;
+    }
+    m3_->sleep_image_diagnostics_dirty.store(true);
+    return result;
   }
   m3_->pending_sleep_image_catalog = M3State::SleepImageCatalogRequest{
           .epoch = epoch,
@@ -291,25 +344,141 @@ EinkSleepImageCatalog::PublishResult RenderSurfaceCaptureSession::PublishSleepIm
           .height = height,
           .entries = std::move(entries),
           .selected_index = selected_index,
+          .mode = mode,
   };
+  m3_->sleep_image_catalog_epoch = epoch;
+  ++m3_->sleep_image_catalog_accepted;
+  ++m3_->sleep_image_candidate_selections;
+  m3_->sleep_image_diagnostics_dirty.store(true);
   return EinkSleepImageCatalog::PublishResult::kAccepted;
 }
 
-void RenderSurfaceCaptureSession::SetScreenOffEpoch(std::uint64_t epoch) {
-  if (!m3_ || epoch == 0) return;
+SleepImageArmResult RenderSurfaceCaptureSession::ArmSleepCycle(std::uint64_t epoch) {
+  if (!m3_ || epoch == 0) return SleepImageArmResult::kRejectedZero;
   std::lock_guard lock(m3_->sleep_image_mutex);
-  if (epoch < m3_->screen_off_epoch) return;
-  m3_->screen_off_epoch = epoch;
-  m3_->screen_off_latched = true;
-  if (m3_->pipeline) m3_->pipeline->SetScreenOffEpoch(epoch);
+  ++m3_->sleep_cycle_arm_dispatches;
+  SleepImageArmResult result = SleepImageArmResult::kRejectedMismatched;
+  if (epoch == m3_->sleep_image_catalog_epoch) {
+    if (m3_->pipeline) {
+      result = m3_->pipeline->ArmSleepCycle(epoch);
+    } else if (epoch < m3_->sleep_image_last_arm_epoch) {
+      result = SleepImageArmResult::kRejectedStale;
+    } else if (epoch == m3_->sleep_image_last_arm_epoch) {
+      result = SleepImageArmResult::kRejectedDuplicate;
+    } else {
+      m3_->pending_sleep_cycle_arm = epoch;
+      result = SleepImageArmResult::kAccepted;
+    }
+  }
+  if (result == SleepImageArmResult::kAccepted) {
+    m3_->sleep_image_last_arm_epoch = epoch;
+    ++m3_->sleep_cycle_arm_accepted;
+  } else {
+    ++m3_->sleep_cycle_arm_rejected;
+  }
+  m3_->sleep_image_diagnostics_dirty.store(true);
+  if (::android::base::GetBoolProperty(kSleepCycleTraceProperty, false)) {
+    ALOGI("sleep_cycle_arm_receipt epoch=%llu result=%d",
+          static_cast<unsigned long long>(epoch), static_cast<int>(result));
+  }
+  return result;
 }
 
-void RenderSurfaceCaptureSession::SetScreenOnEpoch(std::uint64_t epoch) {
-  if (!m3_ || epoch == 0) return;
+SleepImagePresentationResult RenderSurfaceCaptureSession::PresentSleepImage(
+        std::uint64_t epoch) {
+  if (!m3_ || epoch == 0) return SleepImagePresentationResult::kRejectedZero;
   std::lock_guard lock(m3_->sleep_image_mutex);
-  if (epoch != m3_->screen_off_epoch) return;
-  m3_->screen_off_latched = false;
-  if (m3_->pipeline) m3_->pipeline->SetScreenOnEpoch(epoch);
+  if (epoch != m3_->sleep_image_catalog_epoch) {
+    return SleepImagePresentationResult::kRejectedCatalog;
+  }
+  if (!m3_->pipeline) return SleepImagePresentationResult::kRejectedUnavailable;
+  return m3_->pipeline->PresentSleepImage(epoch);
+}
+
+SleepImageDisarmResult RenderSurfaceCaptureSession::DisarmSleepCycle(std::uint64_t epoch) {
+  if (!m3_ || epoch == 0) return SleepImageDisarmResult::kRejectedZero;
+  std::lock_guard lock(m3_->sleep_image_mutex);
+  ++m3_->sleep_cycle_disarm_dispatches;
+  SleepImageDisarmResult result = SleepImageDisarmResult::kRejectedInactive;
+  if (m3_->pipeline) {
+    result = m3_->pipeline->DisarmSleepCycle(epoch);
+  } else if (m3_->pending_sleep_cycle_arm && *m3_->pending_sleep_cycle_arm == epoch) {
+    m3_->pending_sleep_cycle_arm.reset();
+    result = SleepImageDisarmResult::kAccepted;
+  } else if (m3_->pending_sleep_cycle_arm) {
+    result = SleepImageDisarmResult::kRejectedMismatched;
+  }
+  if (result == SleepImageDisarmResult::kAccepted) {
+    ++m3_->sleep_cycle_disarm_accepted;
+  } else {
+    ++m3_->sleep_cycle_disarm_rejected;
+  }
+  m3_->sleep_image_diagnostics_dirty.store(true);
+  if (::android::base::GetBoolProperty(kSleepCycleTraceProperty, false)) {
+    ALOGI("sleep_cycle_disarm_receipt epoch=%llu result=%d",
+          static_cast<unsigned long long>(epoch), static_cast<int>(result));
+  }
+  return result;
+}
+
+std::string RenderSurfaceCaptureSession::FreshDiagnosticsSnapshot() const {
+  if (!m3_) return "neo2_eink_diagnostics_fresh unavailable\n";
+  std::shared_ptr<AndroidEinkPipeline> pipeline;
+  std::uint64_t catalog_epoch = 0;
+  std::uint64_t arm_dispatches = 0;
+  std::uint64_t arm_accepted = 0;
+  std::uint64_t arm_rejected = 0;
+  std::uint64_t disarm_dispatches = 0;
+  std::uint64_t disarm_accepted = 0;
+  std::uint64_t disarm_rejected = 0;
+  std::uint64_t lower_submission = 0;
+  int lower_result = 0;
+  {
+    std::lock_guard lock(m3_->sleep_image_mutex);
+    pipeline = m3_->pipeline;
+    catalog_epoch = m3_->sleep_image_catalog_epoch;
+    arm_dispatches = m3_->sleep_cycle_arm_dispatches;
+    arm_accepted = m3_->sleep_cycle_arm_accepted;
+    arm_rejected = m3_->sleep_cycle_arm_rejected;
+    disarm_dispatches = m3_->sleep_cycle_disarm_dispatches;
+    disarm_accepted = m3_->sleep_cycle_disarm_accepted;
+    disarm_rejected = m3_->sleep_cycle_disarm_rejected;
+#if defined(NEO2_EINK_M4_LOWER_ENGINE_OUTPUT)
+    const auto lower_diagnostics = m3_->engine.diagnostics();
+    lower_submission = lower_diagnostics.pending_submission_id;
+    lower_result = lower_diagnostics.update_result;
+#endif
+  }
+  const auto diagnostics = pipeline ? pipeline->diagnostics() : AndroidEinkPipeline::Diagnostics{};
+  char snapshot[512];
+  const int count = std::snprintf(snapshot, sizeof(snapshot),
+          "neo2_eink_diagnostics_fresh catalog_epoch=%llu arm=%llu/%llu/%llu "
+          "disarm=%llu/%llu/%llu active_epoch=%llu latch_before=%u decision=%u "
+          "conversion_sequence=%llu enqueue=%u mode=%u overlay=%llu/%llu/%llu/%llu/%llu/%llu "
+          "lower_submission=%llu lower_result=%d\n",
+          static_cast<unsigned long long>(catalog_epoch),
+          static_cast<unsigned long long>(arm_dispatches),
+          static_cast<unsigned long long>(arm_accepted),
+          static_cast<unsigned long long>(arm_rejected),
+          static_cast<unsigned long long>(disarm_dispatches),
+          static_cast<unsigned long long>(disarm_accepted),
+          static_cast<unsigned long long>(disarm_rejected),
+          static_cast<unsigned long long>(diagnostics.sleep_cycle_active_epoch),
+          diagnostics.sleep_cycle_latch_state_before_decision,
+          diagnostics.sleep_cycle_last_decision,
+          static_cast<unsigned long long>(diagnostics.sleep_cycle_last_conversion_sequence),
+          diagnostics.sleep_cycle_last_enqueue_result,
+          diagnostics.sleep_image_mode,
+          static_cast<unsigned long long>(diagnostics.sleep_overlay_background_retained),
+          static_cast<unsigned long long>(diagnostics.sleep_overlay_background_rejected),
+          static_cast<unsigned long long>(diagnostics.sleep_overlay_composited),
+          static_cast<unsigned long long>(diagnostics.sleep_overlay_no_background),
+          static_cast<unsigned long long>(diagnostics.sleep_overlay_invalid),
+          static_cast<unsigned long long>(diagnostics.sleep_overlay_background_released),
+          static_cast<unsigned long long>(lower_submission), lower_result);
+  return count > 0 && static_cast<std::size_t>(count) < sizeof(snapshot)
+          ? std::string(snapshot, static_cast<std::size_t>(count))
+          : "neo2_eink_diagnostics_fresh unavailable\n";
 }
 
 void RenderSurfaceCaptureSession::Capture(
@@ -321,7 +490,7 @@ void RenderSurfaceCaptureSession::Capture(
   capture_.Capture(texture, ready_fence);
 
 #if defined(NEO2_EINK_M4_LOWER_ENGINE_OUTPUT)
-  // B013 controls are demand driven by the process-lifetime Binder service.
+  // Manual controls are demand driven by the process-lifetime Binder service.
   // Capture cadence must not poll or write the front light.
 #endif
 
@@ -409,8 +578,7 @@ void RenderSurfaceCaptureSession::MaybeStartM3() {
 #endif
   );
   std::optional<M3State::SleepImageCatalogRequest> pending_catalog;
-  std::uint64_t screen_off_epoch = 0;
-  bool screen_off_latched = false;
+  std::optional<std::uint64_t> pending_arm;
   {
     std::lock_guard lock(m3_->sleep_image_mutex);
     if (m3_->pipeline) return;
@@ -419,19 +587,26 @@ void RenderSurfaceCaptureSession::MaybeStartM3() {
       pending_catalog = std::move(*m3_->pending_sleep_image_catalog);
       m3_->pending_sleep_image_catalog.reset();
     }
-    screen_off_latched = m3_->screen_off_latched;
-    screen_off_epoch = m3_->screen_off_epoch;
+    pending_arm = m3_->pending_sleep_cycle_arm;
+    m3_->pending_sleep_cycle_arm.reset();
   }
   if (pending_catalog) {
     const auto publish = pipeline->PublishSleepImageCatalog(
             pending_catalog->epoch, pending_catalog->width, pending_catalog->height,
-            std::move(pending_catalog->entries), pending_catalog->selected_index);
+            std::move(pending_catalog->entries), pending_catalog->selected_index,
+            pending_catalog->mode);
     if (publish != EinkSleepImageCatalog::PublishResult::kAccepted) {
-      ALOGW("B016 sleep-image catalog rejected before first capture: result=%d",
+      ALOGW("pending sleep-image catalog rejected before first capture: result=%d",
             static_cast<int>(publish));
     }
   }
-  if (screen_off_latched) pipeline->SetScreenOffEpoch(screen_off_epoch);
+  if (pending_arm) {
+    const auto arm = pipeline->ArmSleepCycle(*pending_arm);
+    if (arm != SleepImageArmResult::kAccepted) {
+      ALOGW("sleep_cycle_pending_arm rejected: epoch=%llu result=%d",
+            static_cast<unsigned long long>(*pending_arm), static_cast<int>(arm));
+    }
+  }
   pipeline->Start();
   pipeline->SetEnabled(true);
   m3_->last_diagnostics = std::chrono::steady_clock::now();
@@ -565,7 +740,8 @@ void RenderSurfaceCaptureSession::CaptureM3(
           .pending_capture = pipeline_state.pending_capture,
           .adapter_retained = pipeline_state.adapter_retained,
   };
-  if (!is_resample_capture && m3_->resample_bridge && m3_->resample_bridge->CanRequest()) {
+  if (!is_resample_capture && m3_->resample_bridge &&
+      m3_->resample_bridge->CanRequest()) {
     const auto resample_observation = m3_->resample_bridge->ObserveFullPool(
             pool_capacity != 0 && pool_busy_before >= pool_capacity, pipeline_state, now);
     if (resample_observation != neo2::eink::FullPoolObservationDecision::kIgnored) {
@@ -639,7 +815,7 @@ void RenderSurfaceCaptureSession::CaptureM3(
   }
   auto lease = std::make_shared<SnapshotLease>(
           *m3_->snapshot_pool, *snapshot, m3_->resample_bridge);
-  pipeline->OnCapturedComposition(CapturedComposition{
+  CapturedComposition composition{
           .compose_buffer = std::move(snapshot->buffer),
           .ready_fence = std::move(snapshot->ready_fence),
           .buffer_id = 0,
@@ -648,7 +824,8 @@ void RenderSurfaceCaptureSession::CaptureM3(
           .direct_grayscale_selected = m3_->r1_source_mode == R1SourceMode::kDirect,
           .direct_grayscale_audit_requested = m3_->r1_source_audit,
           .captured_at = now,
-  });
+  };
+  pipeline->OnCapturedComposition(std::move(composition));
   ++m3_->copy_submitted;
   m3_->pressure_accounting.RecordCopied();
   if (m3_->copy_submitted == 1) {
@@ -663,15 +840,23 @@ void RenderSurfaceCaptureSession::MaybeLogM3Diagnostics() {
     return;
   }
   std::shared_ptr<AndroidEinkPipeline> pipeline;
+  std::uint64_t sleep_image_catalog_accepted = 0;
+  std::uint64_t sleep_image_catalog_rejected = 0;
+  std::uint64_t sleep_image_candidate_selections = 0;
   {
     std::lock_guard lock(m3_->sleep_image_mutex);
     pipeline = m3_->pipeline;
+    sleep_image_catalog_accepted = m3_->sleep_image_catalog_accepted;
+    sleep_image_catalog_rejected = m3_->sleep_image_catalog_rejected;
+    sleep_image_candidate_selections = m3_->sleep_image_candidate_selections;
   }
   if (!pipeline) return;
   const auto now = std::chrono::steady_clock::now();
-  if (now - m3_->last_diagnostics < kM3DiagnosticsInterval) {
+  if (now - m3_->last_diagnostics < kM3DiagnosticsInterval &&
+      !m3_->sleep_image_diagnostics_dirty.exchange(false)) {
     return;
   }
+  m3_->sleep_image_diagnostics_dirty.store(false);
   m3_->last_diagnostics = now;
   const auto diagnostics = pipeline->diagnostics();
   const auto adapter_diagnostics = pipeline->adapter_diagnostics();
@@ -699,6 +884,9 @@ void RenderSurfaceCaptureSession::MaybeLogM3Diagnostics() {
           "pool_drops=%llu retained_replaced=%llu retained_deferred=%llu retained_submitted=%llu "
           "submit_accepted=%llu submit_rejected=%llu "
           "normal_differential=%llu/%llu/%llu "
+          "sleep_image_catalog=%llu/%llu sleep_image_selection=%llu "
+          "terminal_black=%llu/%llu/%llu/%llu/%llu/%llu/%llu "
+          "terminal_black_suppressions=%llu "
           "resample=%llu/%llu/%llu/%llu/%llu/%llu/%llu resample_release=%llu "
           "resample_request_failures=%llu "
           "pressure_opportunities=%llu pressure_reasons=%llu/%llu/%llu/%llu/%llu "
@@ -750,6 +938,17 @@ void RenderSurfaceCaptureSession::MaybeLogM3Diagnostics() {
           static_cast<unsigned long long>(diagnostics.normal_differential_selected),
           static_cast<unsigned long long>(diagnostics.normal_differential_accepted),
           static_cast<unsigned long long>(diagnostics.normal_differential_rejected),
+          static_cast<unsigned long long>(sleep_image_catalog_accepted),
+          static_cast<unsigned long long>(sleep_image_catalog_rejected),
+          static_cast<unsigned long long>(sleep_image_candidate_selections),
+          static_cast<unsigned long long>(diagnostics.terminal_black_candidates),
+          static_cast<unsigned long long>(diagnostics.sleep_image_replacements),
+          static_cast<unsigned long long>(diagnostics.terminal_black_last_real_holds),
+          static_cast<unsigned long long>(diagnostics.terminal_black_duplicate_suppressions),
+          static_cast<unsigned long long>(diagnostics.terminal_black_rearm_events),
+          static_cast<unsigned long long>(diagnostics.terminal_black_catalog_ready),
+          static_cast<unsigned long long>(diagnostics.terminal_black_catalog_missing),
+          static_cast<unsigned long long>(diagnostics.sleep_image_suppressions),
           static_cast<unsigned long long>(resample_diagnostics.created),
           static_cast<unsigned long long>(resample_diagnostics.coalesced),
           static_cast<unsigned long long>(resample_diagnostics.dispatched),

@@ -63,6 +63,10 @@ class GrayscaleBuffer {
 
 struct Frame {
   std::uint64_t sequence = 0;
+  // Nonzero only for a lifecycle-driven sleep-image submission. It allows an
+  // aborted OFF intent to withdraw that exact pending candidate without
+  // disturbing ordinary presentation work.
+  std::uint64_t sleep_image_epoch = 0;
   // Optional monotonic timestamps supplied by a capture owner. They measure
   // queue acceptance only; neither one represents physical panel completion.
   std::chrono::steady_clock::time_point captured_at{};
@@ -93,6 +97,7 @@ class PresentationAdapter {
   struct Diagnostics {
     std::uint64_t enqueues_accepted = 0;
     std::uint64_t pending_replaced = 0;
+    std::uint64_t pending_sleep_images_cancelled = 0;
     std::uint64_t trailing_deferred = 0;
     std::uint64_t trailing_submitted = 0;
     std::uint64_t submit_calls = 0;
@@ -127,6 +132,10 @@ class PresentationAdapter {
   // Returns false only after Stop. If a frame is already pending, it is
   // replaced by this newer frame; an in-flight submission is never cancelled.
   bool Enqueue(Frame frame);
+
+  // Withdraws only a not-yet-submitted lifecycle candidate for this epoch.
+  // An in-flight engine submission is never interrupted.
+  bool CancelPendingSleepImage(std::uint64_t epoch);
 
   [[nodiscard]] Diagnostics diagnostics() const;
   [[nodiscard]] OutputSlotState output_slot_state() const;

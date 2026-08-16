@@ -61,3 +61,6 @@ target_include_directories(neo2_android17_profile_test PRIVATE
   profiles/neo2-android17/include)
 target_compile_options(neo2_android17_profile_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
 add_test(NAME neo2_android17_profile_test COMMAND neo2_android17_profile_test)
+
+add_test(NAME public_tree_privacy_audit
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tools/audit-public-tree.sh)

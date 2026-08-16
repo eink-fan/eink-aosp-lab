@@ -6,6 +6,7 @@
         android:protectionLevel="signature" />
     <uses-permission android:name="org.neo2.controls.permission.CONTROL_FRONTLIGHT" />
     <uses-permission android:name="org.neo2.controls.permission.MANAGE_SLEEP_IMAGES" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <application android:allowBackup="false" android:label="Neo2 Controls">
         <activity android:name=".ControlsActivity" android:exported="true">
             <intent-filter>
@@ -13,6 +14,8 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".SleepImagePreviewActivity"
+            android:exported="false" />
         <service android:name=".SleepImageCatalogService"
             android:directBootAware="true"
             android:exported="true"

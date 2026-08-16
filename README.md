@@ -14,8 +14,9 @@ It does not claim that one device's e-ink engine is compatible with another.
 - A complete portable C++ presentation adapter: asynchronous latest-frame
   scheduling, snapshot ownership, admission/resample policies, grayscale
   conversion/delta analysis, readiness gates, and host tests.
-- The complete authored Neo 2 Android integration, including the same-build
-  engine bridge and Android-17 AOSP patch set.
+- The reviewed Neo 2 Android source integration, including the same-build
+  engine bridge, bounded sleep-image catalog and overlay policies, and a
+  conservative Android-17 AOSP patch set.
 - Android-14 and Android-17 Neo 2 profiles with observed panel geometry and
   refresh-mode hints, plus same-build integration guides.
 - A safe local-only payload staging helper.
@@ -25,6 +26,8 @@ It does not claim that one device's e-ink engine is compatible with another.
 
 - Vendor libraries, waveform/calibration bytes, stock images, OTAs, partition
   dumps, device captures, and credentials.
+- Personal paths, host or account names, device-instance identifiers, build
+  receipts, and private operational history.
 - Flashing, unlocking, or stock-partition modification procedures.
 
 ## Quick host check
@@ -65,6 +68,11 @@ front-light sysfs nodes. DSU installation, one-boot enablement, reboot, and
 interaction are separate deliberate steps; see
 [the DSU handoff guide](tools/dsu/README.md).
 
+The authored source also contains newer host-tested catalog, preview, overlay,
+and portrait-to-panel transformation components. They are included for review
+and porting, but the conservative public profile does not claim that every
+reference component is active or device-qualified in its produced image.
+
 ## Before publishing
 
 The independently authored project material is dedicated to the public domain
@@ -77,6 +85,7 @@ We welcome an OEM-supported path to modern Android for Neo 2 owners.
 
 Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
 [docs/BYO_VENDOR.md](docs/BYO_VENDOR.md), and
-[docs/PORTING.md](docs/PORTING.md). Neo 2 owners should then read
+[docs/PORTING.md](docs/PORTING.md). See [docs/CHANGELOG.md](docs/CHANGELOG.md)
+for the public source history. Neo 2 owners should then read
 [the Android-14 profile](profiles/neo2-android14/README.md) or
 [the Android-17 profile](profiles/neo2-android17/README.md).

@@ -10,6 +10,7 @@ namespace neo2::eink::android {
 
 struct EinkSleepImageCatalog::Snapshot final {
   std::vector<std::shared_ptr<OwnedGrayscaleBuffer>> entries;
+  std::vector<std::shared_ptr<const std::vector<std::uint8_t>>> alpha;
 };
 
 namespace {
@@ -47,7 +48,7 @@ EinkSleepImageCatalog::PublishResult EinkSleepImageCatalog::Validate(
     return PublishResult::kRejectedGeometry;
   }
   if (expected_bytes != kPanelBytes ||
-      entries.size() > kMaximumCatalogBytes / expected_bytes) {
+      entries.size() > kMaximumCatalogBytes / (expected_bytes * 2)) {
     return PublishResult::kRejectedBytes;
   }
   for (const Entry& entry : entries) {
@@ -56,6 +57,7 @@ EinkSleepImageCatalog::PublishResult EinkSleepImageCatalog::Validate(
     }
     if (entry.panel_gray.size() != expected_bytes) return PublishResult::kRejectedBytes;
     if (!IsPanelGray(entry.panel_gray)) return PublishResult::kRejectedPanelGray;
+    if (entry.alpha.size() != expected_bytes) return PublishResult::kRejectedAlphaBytes;
   }
   return PublishResult::kAccepted;
 }
@@ -66,9 +68,12 @@ EinkSleepImageCatalog::PublishResult EinkSleepImageCatalog::Publish(std::vector<
 
   auto next = std::make_shared<Snapshot>();
   next->entries.reserve(entries.size());
+  next->alpha.reserve(entries.size());
   for (Entry& entry : entries) {
     next->entries.push_back(std::make_shared<OwnedGrayscaleBuffer>(
             entry.width, entry.height, std::move(entry.panel_gray)));
+    next->alpha.push_back(
+            std::make_shared<const std::vector<std::uint8_t>>(std::move(entry.alpha)));
   }
   std::atomic_store_explicit(&snapshot_, std::shared_ptr<const Snapshot>(std::move(next)),
                              std::memory_order_release);
@@ -89,7 +94,10 @@ SleepImageCandidate EinkSleepImageCatalog::CandidateAt(std::size_t index) const 
   const std::shared_ptr<const Snapshot> snapshot =
           std::atomic_load_explicit(&snapshot_, std::memory_order_acquire);
   if (!snapshot || index >= snapshot->entries.size()) return {};
-  return {.buffer = snapshot->entries[index], .width = expected_width_, .height = expected_height_};
+  return {.buffer = snapshot->entries[index],
+          .alpha = snapshot->alpha[index],
+          .width = expected_width_,
+          .height = expected_height_};
 }
 
 }  // namespace neo2::eink::android
