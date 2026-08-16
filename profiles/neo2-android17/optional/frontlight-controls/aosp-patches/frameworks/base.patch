@@ -1,0 +1,1651 @@
+diff --git a/core/java/android/neo2/INeo2FrontLightManager.aidl b/core/java/android/neo2/INeo2FrontLightManager.aidl
+new file mode 100644
+index 0000000000000000000000000000000000000000..53bcc84e3d0c6dbb008c00b08f74dba04cdbbe1c
+--- /dev/null
++++ b/core/java/android/neo2/INeo2FrontLightManager.aidl
+@@ -0,0 +1,16 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ */
++
++package android.neo2;
++
++/** @hide */
++interface INeo2FrontLightManager {
++    int submitManualRequest(int brightnessPercent, int warmthPercent);
++    int submitBrightnessRequest(int brightnessPercent);
++    int setEnabled(boolean enabled);
++    int[] getState();
++}
+diff --git a/core/java/android/neo2/Neo2FrontLightManager.java b/core/java/android/neo2/Neo2FrontLightManager.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..fa1abc0d3ac5c4310207f67e5c2f7f1545017843
+--- /dev/null
++++ b/core/java/android/neo2/Neo2FrontLightManager.java
+@@ -0,0 +1,102 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ */
++
++package android.neo2;
++
++import android.annotation.Nullable;
++import android.annotation.SuppressLint;
++import android.os.IBinder;
++import android.os.RemoteException;
++import android.os.ServiceManager;
++
++/**
++ * Private Neo2 front-light mediator client.
++ *
++ * @hide
++ */
++@SuppressLint("UnflaggedApi")
++public final class Neo2FrontLightManager {
++    public static final String SERVICE_NAME = "neo2_frontlight";
++    public static final int RESULT_QUEUED = 7;
++    public static final int RESULT_UNAVAILABLE = 3;
++
++    private static final int STATE_ENABLED = 0;
++    private static final int STATE_BRIGHTNESS = 1;
++    private static final int STATE_WARMTH = 2;
++    private static final int STATE_SIZE = 3;
++
++    private final INeo2FrontLightManager mService;
++
++    private Neo2FrontLightManager(INeo2FrontLightManager service) {
++        mService = service;
++    }
++
++    @SuppressLint("ManagerLookup")
++    @Nullable
++    public static Neo2FrontLightManager connect() {
++        IBinder binder = ServiceManager.getService(SERVICE_NAME);
++        if (binder == null) return null;
++        return new Neo2FrontLightManager(INeo2FrontLightManager.Stub.asInterface(binder));
++    }
++
++    public int submitManualRequest(int brightnessPercent, int warmthPercent) {
++        try {
++            return mService.submitManualRequest(brightnessPercent, warmthPercent);
++        } catch (RemoteException e) {
++            return RESULT_UNAVAILABLE;
++        }
++    }
++
++    /** Changes brightness while preserving the manager-owned accepted warmth. */
++    public int submitBrightnessRequest(int brightnessPercent) {
++        try {
++            return mService.submitBrightnessRequest(brightnessPercent);
++        } catch (RemoteException e) {
++            return RESULT_UNAVAILABLE;
++        }
++    }
++
++    /** Enables or disables the front light without discarding the last nonzero pair. */
++    public int setEnabled(boolean enabled) {
++        try {
++            return mService.setEnabled(enabled);
++        } catch (RemoteException e) {
++            return RESULT_UNAVAILABLE;
++        }
++    }
++
++    /** Returns manager-owned desired state. This is not hardware readback. */
++    public State getState() {
++        try {
++            int[] state = mService.getState();
++            if (state == null || state.length != STATE_SIZE) return State.unavailable();
++            return new State(true, state[STATE_ENABLED] != 0,
++                    state[STATE_BRIGHTNESS], state[STATE_WARMTH]);
++        } catch (RemoteException e) {
++            return State.unavailable();
++        }
++    }
++
++    /** Immutable, redacted desired state exposed to trusted native surfaces. */
++    public static final class State {
++        public final boolean available;
++        public final boolean enabled;
++        public final int brightness;
++        public final int warmth;
++
++        public State(boolean available, boolean enabled, int brightness, int warmth) {
++            this.available = available;
++            this.enabled = enabled;
++            this.brightness = brightness;
++            this.warmth = warmth;
++        }
++
++        private static State unavailable() {
++            return new State(false, false, 50, 50);
++        }
++    }
++}
+diff --git a/packages/SystemUI/AndroidManifest.xml b/packages/SystemUI/AndroidManifest.xml
+index 1a5392dad2ac10c7f2c6d5185856ed026c8dbfbd..7ba80de757caa75367b530315e0c58d333abb907 100644
+--- a/packages/SystemUI/AndroidManifest.xml
++++ b/packages/SystemUI/AndroidManifest.xml
+@@ -23,6 +23,7 @@
+     coreApp="true">
+ 
+     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
++    <uses-permission android:name="org.neo2.controls.permission.CONTROL_FRONTLIGHT" />
+ 
+     <!-- Used to read wallpaper -->
+     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+@@ -964,7 +965,7 @@
+ 
+         <activity
+             android:name=".settings.brightness.BrightnessDialog"
+-            android:label="@string/quick_settings_brightness_dialog_title"
++            android:label="@string/neo2_frontlight_label"
+             android:theme="@style/BrightnessDialog"
+             android:finishOnCloseSystemDialogs="true"
+             android:launchMode="singleInstance"
+diff --git a/packages/SystemUI/compose/features/src/com/android/systemui/qs/ui/composable/QuickSettingsContent.kt b/packages/SystemUI/compose/features/src/com/android/systemui/qs/ui/composable/QuickSettingsContent.kt
+index 0fc0146120c5547b29e7eeb043548c8cdb9f129f..c4166094c6a1942c2ca7b2b30174da3ee4b1a40a 100644
+--- a/packages/SystemUI/compose/features/src/com/android/systemui/qs/ui/composable/QuickSettingsContent.kt
++++ b/packages/SystemUI/compose/features/src/com/android/systemui/qs/ui/composable/QuickSettingsContent.kt
+@@ -31,6 +31,7 @@ import androidx.compose.runtime.snapshotFlow
+ import androidx.compose.ui.Alignment
+ import androidx.compose.ui.Modifier
+ import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.platform.LocalResources
+ import androidx.compose.ui.res.dimensionResource
+ import androidx.lifecycle.compose.LifecycleStartEffect
+ import com.android.compose.animation.scene.ContentScope
+@@ -46,6 +47,7 @@ import com.android.systemui.qs.panels.ui.compose.TileGrid
+ import com.android.systemui.qs.shared.ui.QuickSettings.Elements
+ import com.android.systemui.qs.ui.viewmodel.QuickSettingsContainerViewModel
+ import com.android.systemui.res.R
++import com.android.systemui.settings.brightness.Neo2QuickSettingsBrightnessSliderComposable
+ import kotlinx.coroutines.flow.filterNotNull
+ 
+ @Composable
+@@ -66,22 +68,28 @@ fun ContentScope.QuickSettingsContent(
+                             .collect { isBrightnessSliderInteractable = it >= .5f }
+                     }
+                     Element(modifier = Modifier, key = Elements.BrightnessSlider) {
+-                        BrightnessSliderContainer(
+-                            viewModel.brightnessSliderViewModel,
+-                            containerColors =
+-                                ContainerColors(
+-                                    Color.Transparent,
+-                                    ContainerColors.defaultContainerColor,
+-                                ),
+-                            modifier =
+-                                Modifier.padding(
++                        val modifier =
++                            Modifier.padding(
+                                         vertical =
+                                             dimensionResource(id = R.dimen.qs_brightness_margin_top)
+                                     )
+                                     .thenIf(!isBrightnessSliderInteractable) {
+                                         Modifier.gesturesDisabled()
+-                                    },
+-                        )
++                                    }
++                        if (LocalResources.current.getBoolean(
++                                R.bool.config_neo2_use_frontlight_brightness_slider)) {
++                            Neo2QuickSettingsBrightnessSliderComposable(modifier)
++                        } else {
++                            BrightnessSliderContainer(
++                                viewModel.brightnessSliderViewModel,
++                                containerColors =
++                                    ContainerColors(
++                                        Color.Transparent,
++                                        ContainerColors.defaultContainerColor,
++                                    ),
++                                modifier = modifier,
++                            )
++                        }
+                     }
+                 }
+             },
+diff --git a/packages/SystemUI/compose/features/src/com/android/systemui/qs/ui/composable/QuickSettingsShadeOverlay.kt b/packages/SystemUI/compose/features/src/com/android/systemui/qs/ui/composable/QuickSettingsShadeOverlay.kt
+index 7758a7063e9831cbd1ac2ac0cc9400c64a43ff3b..d3c80b2979ffb53ecb48b4da6ec17d0c7f8e8276 100644
+--- a/packages/SystemUI/compose/features/src/com/android/systemui/qs/ui/composable/QuickSettingsShadeOverlay.kt
++++ b/packages/SystemUI/compose/features/src/com/android/systemui/qs/ui/composable/QuickSettingsShadeOverlay.kt
+@@ -88,6 +88,7 @@ import com.android.systemui.dagger.SysUISingleton
+ import com.android.systemui.development.ui.compose.BuildNumber
+ import com.android.systemui.development.ui.viewmodel.BuildNumberViewModel
+ import com.android.systemui.lifecycle.rememberViewModel
++import com.android.systemui.settings.brightness.Neo2QuickSettingsBrightnessSliderComposable
+ import com.android.systemui.media.remedia.ui.compose.Media
+ import com.android.systemui.media.remedia.ui.compose.MediaPresentationStyle
+ import com.android.systemui.notifications.ui.composable.SnoozableHeadsUpNotificationPlaceholder
+@@ -406,17 +407,22 @@ private fun ContentScope.QuickSettingsLayout(
+                         enabled = { layoutState.transitionState is TransitionState.Idle }
+                     )
+                 ) {
+-                    BrightnessSliderContainer(
+-                        viewModel = qsContainerViewModel.brightnessSliderViewModel,
+-                        containerColors =
+-                            ContainerColors(
+-                                idleColor = Color.Transparent,
+-                                mirrorColor =
+-                                    OverlayShade.Colors.panelBackground(isTransparencyEnabled),
+-                            ),
+-                        modifier = Modifier.fillMaxWidth(),
+-                        dimensions = QuickSettingsShade.Dimensions.brightnessSliderDimensions,
+-                    )
++                    if (LocalResources.current.getBoolean(
++                            R.bool.config_neo2_use_frontlight_brightness_slider)) {
++                        Neo2QuickSettingsBrightnessSliderComposable(Modifier.fillMaxWidth())
++                    } else {
++                        BrightnessSliderContainer(
++                            viewModel = qsContainerViewModel.brightnessSliderViewModel,
++                            containerColors =
++                                ContainerColors(
++                                    idleColor = Color.Transparent,
++                                    mirrorColor =
++                                        OverlayShade.Colors.panelBackground(isTransparencyEnabled),
++                                ),
++                            modifier = Modifier.fillMaxWidth(),
++                            dimensions = QuickSettingsShade.Dimensions.brightnessSliderDimensions,
++                        )
++                    }
+                 }
+             }
+ 
+diff --git a/packages/SystemUI/res/values/config.xml b/packages/SystemUI/res/values/config.xml
+index f1d7ed35d86c4a704f0bdf72348e7c390af08bd4..0303230b99d45142ba83a2b43537adaf4a9ad70f 100644
+--- a/packages/SystemUI/res/values/config.xml
++++ b/packages/SystemUI/res/values/config.xml
+@@ -80,12 +80,12 @@
+ 
+     <!-- The default tiles to display in QuickSettings-->
+     <string name="quick_settings_tiles_default" translatable="false">
+-        internet,bt,dnd,cast,flashlight,airplane,rotation,wallet,alarm,controls,screenrecord,battery
++        internet,bt,dnd,cast,flashlight,frontlight,airplane,rotation,wallet,alarm,controls,screenrecord,battery
+     </string>
+ 
+     <!-- The default tiles to display in QuickSettings after the internet tile split-->
+     <string name="quick_settings_tiles_default_split" translatable="false">
+-        wifi,bt,cell,cast,dnd,wallet,airplane,rotation,flashlight,battery,alarm,controls,screenrecord
++        wifi,bt,cell,cast,dnd,wallet,airplane,rotation,flashlight,frontlight,battery,alarm,controls,screenrecord
+     </string>
+ 
+     <!-- The default large tiles in Quick Settings after the internet tile split -->
+@@ -107,7 +107,7 @@
+ 
+     <!-- Tiles native to System UI. Order should match "quick_settings_tiles_default" -->
+     <string name="quick_settings_tiles_stock" translatable="false">
+-        internet,wifi,bt,flashlight,dnd,modes_dnd,alarm,airplane,controls,wallet,rotation,battery,cast,screenrecord,mictoggle,cameratoggle,location,hotspot,inversion,saver,dark,work,night,reverse,reduce_brightness,qr_code_scanner,onehanded,color_correction,font_scaling,record_issue,hearing_devices,notes,desktopeffects,cell
++        internet,wifi,bt,flashlight,frontlight,dnd,modes_dnd,alarm,airplane,controls,wallet,rotation,battery,cast,screenrecord,mictoggle,cameratoggle,location,hotspot,inversion,saver,dark,work,night,reverse,reduce_brightness,qr_code_scanner,onehanded,color_correction,font_scaling,record_issue,hearing_devices,notes,desktopeffects,cell
+     </string>
+ 
+     <!-- The tiles to display in QuickSettings -->
+@@ -127,6 +127,7 @@
+     <string-array name="config_quickSettingsAutoAdd" translatable="false">
+         <item>accessibility_font_scaling_has_been_changed:font_scaling</item>
+         <item>accessibility_force_invert_color_enabled:dark</item>
++        <item>neo2_frontlight_state_present:frontlight</item>
+     </string-array>
+ 
+     <!-- Use collapsed layout for media player in landscape QQS -->
+@@ -1188,6 +1189,9 @@
+     -->
+     <bool name="config_useBrightnessMirrorInOverlay">true</bool>
+ 
++    <!-- Neo2 alone may replace this dialog's display-brightness transport. -->
++    <bool name="config_neo2_use_frontlight_brightness_slider">true</bool>
++
+     <!-- List of allowed tiles for headless system user's quick settings.
+ 
+          Some example values are 'alarm', 'internet', 'bt' (bluetooth),
+diff --git a/packages/SystemUI/res/values/strings.xml b/packages/SystemUI/res/values/strings.xml
+index d025a3ff3a9dae1410f592b5579b5e4df2ae246c..776576dd837c2e2ee63c8d6faab76f2022635693 100644
+--- a/packages/SystemUI/res/values/strings.xml
++++ b/packages/SystemUI/res/values/strings.xml
+@@ -5062,4 +5062,13 @@
+     <!-- Accessibility label for the thumbs down button on attribution dialog. [CHAR_LIMIT=NONE] -->
+     <string name="ace_attribution_thumbs_down_button_accessibility_description">Thumbs down feedback button</string>
+ 
++    <string name="neo2_frontlight_label">Front light</string>
++    <string name="neo2_frontlight_brightness_label">Brightness</string>
++    <string name="neo2_frontlight_warmth_label">Cool — Warm</string>
++    <string name="neo2_frontlight_off">Off</string>
++    <string name="neo2_frontlight_tile_summary"><xliff:g id="brightness">%1$d</xliff:g>%% brightness · <xliff:g id="warmth">%2$d</xliff:g>%% warmth</string>
++    <string name="neo2_frontlight_tile_content_description"><xliff:g id="label">%1$s</xliff:g>, <xliff:g id="state">%2$s</xliff:g></string>
++    <string name="neo2_frontlight_tile_content_description_unavailable">Front light unavailable</string>
++    <string name="neo2_frontlight_brightness_content_description">Front light brightness</string>
++
+ </resources>
+diff --git a/packages/SystemUI/src/com/android/systemui/qs/composefragment/QSFragmentCompose.kt b/packages/SystemUI/src/com/android/systemui/qs/composefragment/QSFragmentCompose.kt
+index 16b1c4faf50dbf3ce3eb9296669c5e02a49ffe5e..54da01f803634f9798ab14257dff631c860967a7 100644
+--- a/packages/SystemUI/src/com/android/systemui/qs/composefragment/QSFragmentCompose.kt
++++ b/packages/SystemUI/src/com/android/systemui/qs/composefragment/QSFragmentCompose.kt
+@@ -88,6 +88,7 @@ import androidx.compose.ui.unit.lerp
+ import androidx.compose.ui.unit.round
+ import androidx.compose.ui.util.fastRoundToInt
+ import androidx.compose.ui.viewinterop.AndroidView
++import androidx.compose.ui.platform.LocalResources
+ import androidx.lifecycle.Lifecycle
+ import androidx.lifecycle.compose.collectAsStateWithLifecycle
+ import androidx.lifecycle.lifecycleScope
+@@ -121,6 +122,7 @@ import com.android.systemui.initOnBackPressedDispatcherOwner
+ import com.android.systemui.keyboard.shortcut.ui.composable.InteractionsConfig
+ import com.android.systemui.keyboard.shortcut.ui.composable.ProvideShortcutHelperIndication
+ import com.android.systemui.lifecycle.repeatWhenAttached
++import com.android.systemui.settings.brightness.Neo2QuickSettingsBrightnessSliderComposable
+ import com.android.systemui.lifecycle.setSnapshotBinding
+ import com.android.systemui.log.table.TableLogBuffer
+ import com.android.systemui.media.controls.ui.view.MediaHost
+@@ -852,16 +854,22 @@ constructor(
+                                     )
+                                 ) {
+                                     AlwaysDarkMode {
+-                                        BrightnessSliderContainer(
+-                                            viewModel =
+-                                                containerViewModel.brightnessSliderViewModel,
+-                                            containerColors =
+-                                                ContainerColors(
+-                                                    Color.Transparent,
+-                                                    ContainerColors.defaultContainerColor,
+-                                                ),
+-                                            modifier = Modifier.fillMaxWidth(),
+-                                        )
++                                        if (LocalResources.current.getBoolean(
++                                                R.bool.config_neo2_use_frontlight_brightness_slider)) {
++                                            Neo2QuickSettingsBrightnessSliderComposable(
++                                                Modifier.fillMaxWidth())
++                                        } else {
++                                            BrightnessSliderContainer(
++                                                viewModel =
++                                                    containerViewModel.brightnessSliderViewModel,
++                                                containerColors =
++                                                    ContainerColors(
++                                                        Color.Transparent,
++                                                        ContainerColors.defaultContainerColor,
++                                                    ),
++                                                modifier = Modifier.fillMaxWidth(),
++                                            )
++                                        }
+                                     }
+                                 }
+                             }
+diff --git a/packages/SystemUI/src/com/android/systemui/qs/dagger/QSModule.java b/packages/SystemUI/src/com/android/systemui/qs/dagger/QSModule.java
+index 420224b1d0e425b515dab351d50e339b6d68a997..d0bbd62424d7686402ff46bb9cc057aaed76e72e 100644
+--- a/packages/SystemUI/src/com/android/systemui/qs/dagger/QSModule.java
++++ b/packages/SystemUI/src/com/android/systemui/qs/dagger/QSModule.java
+@@ -16,12 +16,42 @@
+ 
+ package com.android.systemui.qs.dagger;
+ 
++import com.android.systemui.qs.QsEventLogger;
+ import com.android.systemui.qs.panels.dagger.PanelsModule;
++import com.android.systemui.qs.pipeline.shared.TileSpec;
++import com.android.systemui.qs.shared.model.TileCategory;
++import com.android.systemui.qs.tileimpl.QSTileImpl;
++import com.android.systemui.qs.tiles.Neo2FrontLightTile;
++import com.android.systemui.qs.tiles.base.shared.model.QSTileConfig;
++import com.android.systemui.qs.tiles.base.shared.model.QSTileUIConfig;
++import com.android.systemui.res.R;
+ 
++import dagger.Binds;
+ import dagger.Module;
++import dagger.Provides;
++import dagger.multibindings.IntoMap;
++import dagger.multibindings.StringKey;
+ 
+ /**
+  * Module for QS dependencies for AOSP inclusion
+  */
+ @Module(includes = { PanelsModule.class, QSModuleBase.class })
+-public interface QSModule { }
++public interface QSModule {
++    @Binds
++    @IntoMap
++    @StringKey(Neo2FrontLightTile.TILE_SPEC)
++    QSTileImpl<?> bindNeo2FrontLightTile(Neo2FrontLightTile tile);
++
++    /** Static editor presentation for the Neo2 front-light platform tile. */
++    @Provides
++    @IntoMap
++    @StringKey(Neo2FrontLightTile.TILE_SPEC)
++    static QSTileConfig provideNeo2FrontLightTileConfig(QsEventLogger uiEventLogger) {
++        return new QSTileConfig(
++                TileSpec.create(Neo2FrontLightTile.TILE_SPEC),
++                new QSTileUIConfig.Resource(
++                        R.drawable.ic_device_light_on, R.string.neo2_frontlight_label),
++                uiEventLogger.getNewInstanceId(),
++                TileCategory.DISPLAY);
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/qs/tiles/Neo2FrontLightTile.java b/packages/SystemUI/src/com/android/systemui/qs/tiles/Neo2FrontLightTile.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..f0a314c62d517f66b89829afc71e1d33b47e00c9
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/qs/tiles/Neo2FrontLightTile.java
+@@ -0,0 +1,127 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ */
++
++package com.android.systemui.qs.tiles;
++
++import android.content.Intent;
++import android.neo2.Neo2FrontLightManager;
++import android.os.Handler;
++import android.os.Looper;
++import android.service.quicksettings.Tile;
++import android.widget.Switch;
++
++import androidx.annotation.Nullable;
++
++import com.android.internal.logging.MetricsLogger;
++import com.android.systemui.animation.Expandable;
++import com.android.systemui.dagger.qualifiers.Background;
++import com.android.systemui.dagger.qualifiers.Main;
++import com.android.systemui.plugins.ActivityStarter;
++import com.android.systemui.plugins.FalsingManager;
++import com.android.systemui.plugins.qs.QSTile;
++import com.android.systemui.plugins.statusbar.StatusBarStateController;
++import com.android.systemui.qs.QSHost;
++import com.android.systemui.qs.QsEventLogger;
++import com.android.systemui.qs.logging.QSLogger;
++import com.android.systemui.qs.tileimpl.QSTileImpl;
++import com.android.systemui.res.R;
++
++import javax.inject.Inject;
++
++/** Quick Settings tile for the manager-owned Neo2 front light. */
++public final class Neo2FrontLightTile extends QSTileImpl<QSTile.BooleanState> {
++    public static final String TILE_SPEC = "frontlight";
++    private static final long REQUEST_REFRESH_MILLIS = 50;
++
++    @Nullable private final Neo2FrontLightManager mManager;
++    private final Handler mMainHandler;
++
++    @Inject
++    public Neo2FrontLightTile(
++            QSHost host,
++            QsEventLogger uiEventLogger,
++            @Background Looper backgroundLooper,
++            @Main Handler mainHandler,
++            FalsingManager falsingManager,
++            MetricsLogger metricsLogger,
++            StatusBarStateController statusBarStateController,
++            ActivityStarter activityStarter,
++            QSLogger qsLogger) {
++        super(host, uiEventLogger, backgroundLooper, mainHandler, falsingManager, metricsLogger,
++                statusBarStateController, activityStarter, qsLogger);
++        mManager = Neo2FrontLightManager.connect();
++        mMainHandler = mainHandler;
++    }
++
++    @Override
++    public boolean isAvailable() {
++        return mManager != null && mContext.getResources().getBoolean(
++                R.bool.config_neo2_use_frontlight_brightness_slider);
++    }
++
++    @Override
++    public BooleanState newTileState() {
++        return new BooleanState();
++    }
++
++    @Override
++    protected void handleClick(@Nullable Expandable expandable) {
++        if (mManager == null) return;
++        Neo2FrontLightManager.State state = mManager.getState();
++        if (state.available) {
++            mManager.setEnabled(!state.enabled);
++            refreshState();
++            mMainHandler.postDelayed(this::refreshState, REQUEST_REFRESH_MILLIS);
++        }
++    }
++
++    @Override
++    public Intent getLongClickIntent() {
++        return new Intent(Intent.ACTION_SHOW_BRIGHTNESS_DIALOG)
++                .setPackage(mContext.getPackageName())
++                .putExtra(Intent.EXTRA_BRIGHTNESS_DIALOG_IS_FULL_WIDTH, true);
++    }
++
++    @Override
++    protected void handleUpdateState(BooleanState state, Object arg) {
++        Neo2FrontLightManager.State managerState =
++                mManager == null ? null : mManager.getState();
++        state.label = mContext.getString(R.string.neo2_frontlight_label);
++        state.expandedAccessibilityClassName = Switch.class.getName();
++        if (managerState == null || !managerState.available) {
++            state.value = false;
++            state.state = Tile.STATE_UNAVAILABLE;
++            state.secondaryLabel = null;
++            state.contentDescription = mContext.getString(
++                    R.string.neo2_frontlight_tile_content_description_unavailable);
++            state.icon = maybeLoadResourceIcon(R.drawable.ic_device_light_off);
++            return;
++        }
++        boolean enabled = managerState.enabled;
++        state.value = enabled;
++        state.state = enabled ? Tile.STATE_ACTIVE : Tile.STATE_INACTIVE;
++        state.secondaryLabel = enabled
++                ? mContext.getString(R.string.neo2_frontlight_tile_summary,
++                        managerState.brightness, managerState.warmth)
++                : mContext.getString(R.string.neo2_frontlight_off);
++        state.contentDescription = mContext.getString(
++                R.string.neo2_frontlight_tile_content_description,
++                state.label, state.secondaryLabel);
++        state.icon = maybeLoadResourceIcon(enabled
++                ? R.drawable.ic_device_light_on : R.drawable.ic_device_light_off);
++    }
++
++    @Override
++    public CharSequence getTileLabel() {
++        return mContext.getString(R.string.neo2_frontlight_label);
++    }
++
++    @Override
++    public int getMetricsCategory() {
++        return 0;
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/settings/brightness/BrightnessDialog.java b/packages/SystemUI/src/com/android/systemui/settings/brightness/BrightnessDialog.java
+index 488430ccd1c6d2f80606e866d879880fc476204b..94cdff8e77dc92059305e7a5e5e26265c8a6cd3b 100644
+--- a/packages/SystemUI/src/com/android/systemui/settings/brightness/BrightnessDialog.java
++++ b/packages/SystemUI/src/com/android/systemui/settings/brightness/BrightnessDialog.java
+@@ -128,13 +128,17 @@ public class BrightnessDialog extends ComponentActivity {
+     private void initializeDialog() {
+         setWindowAttributes();
+         ComposeView composeView = new ComposeView(this);
+-        ComposeDialogComposableProvider.INSTANCE.setComposableBrightness(
+-                composeView,
+-                new ComposableProvider(
+-                        mBrightnessSliderViewModelFactory,
+-                        mIsExpandedAudioTileDetailsEnabled)
+-
+-        );
++        if (getResources().getBoolean(R.bool.config_neo2_use_frontlight_brightness_slider)) {
++            ComposeDialogComposableProviderKt.setComposableNeo2FrontLight(
++                    ComposeDialogComposableProvider.INSTANCE, composeView);
++        } else {
++            ComposeDialogComposableProvider.INSTANCE.setComposableBrightness(
++                    composeView,
++                    new ComposableProvider(
++                            mBrightnessSliderViewModelFactory,
++                            mIsExpandedAudioTileDetailsEnabled)
++            );
++        }
+         composeView.setId(R.id.brightness_dialog_slider);
+         setContentView(composeView);
+         ((ViewGroup) composeView.getParent()).setClipChildren(false);
+diff --git a/packages/SystemUI/src/com/android/systemui/settings/brightness/ComposeDialogComposableProvider.kt b/packages/SystemUI/src/com/android/systemui/settings/brightness/ComposeDialogComposableProvider.kt
+index 855fb685b6d0cd118cef02d01aab5e779246c5bd..e07cedb929a20a21e879a2e8faa2240ece79476e 100644
+--- a/packages/SystemUI/src/com/android/systemui/settings/brightness/ComposeDialogComposableProvider.kt
++++ b/packages/SystemUI/src/com/android/systemui/settings/brightness/ComposeDialogComposableProvider.kt
+@@ -76,6 +76,13 @@ class ComposableProvider(
+     }
+ }
+ 
++fun ComposeDialogComposableProvider.setComposableNeo2FrontLight(composeView: ComposeView) {
++    composeView.apply {
++        setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
++        setContent { PlatformTheme { Neo2FrontLightSliderComposable() } }
++    }
++}
++
+ private val expandedAudioDialogDimensions =
+     BrightnessSliderDimensions(
+         iconSize = DpSize(24.dp, 24.dp),
+diff --git a/packages/SystemUI/src/com/android/systemui/settings/brightness/Neo2FrontLightSliderComposable.kt b/packages/SystemUI/src/com/android/systemui/settings/brightness/Neo2FrontLightSliderComposable.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..c21066456c61dd443a81311b5cae3e296599db0d
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/settings/brightness/Neo2FrontLightSliderComposable.kt
+@@ -0,0 +1,218 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ */
++
++package com.android.systemui.settings.brightness
++
++import android.neo2.Neo2FrontLightManager
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.Row
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.Slider
++import androidx.compose.material3.Surface
++import androidx.compose.material3.Switch
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.rememberCoroutineScope
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.mutableFloatStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.platform.testTag
++import androidx.compose.ui.res.stringResource
++import androidx.compose.ui.semantics.contentDescription
++import androidx.compose.ui.semantics.semantics
++import androidx.compose.ui.unit.dp
++import com.android.systemui.res.R
++import kotlin.math.roundToInt
++import kotlinx.coroutines.currentCoroutineContext
++import kotlinx.coroutines.delay
++import kotlinx.coroutines.isActive
++import kotlinx.coroutines.launch
++
++/** Neo2-only desired-state controls; slider drag events never call the manager. */
++@Composable
++fun Neo2FrontLightSliderComposable() {
++    val manager = remember { Neo2FrontLightManager.connect() }
++    val initial = remember(manager) { manager?.state }
++    val scope = rememberCoroutineScope()
++    var available by remember { mutableStateOf(initial?.available == true) }
++    var enabled by remember { mutableStateOf(initial?.enabled ?: false) }
++    var brightness by remember {
++        mutableFloatStateOf(((initial?.brightness ?: 50) / 100f).coerceIn(0f, 1f))
++    }
++    var warmth by remember {
++        mutableFloatStateOf(((initial?.warmth ?: 50) / 100f).coerceIn(0f, 1f))
++    }
++    var dragging by remember { mutableStateOf(false) }
++
++    fun refreshFromManager() {
++        val state = manager?.state
++        available = state?.available == true
++        if (state != null && state.available && !dragging) {
++            enabled = state.enabled
++            brightness = (state.brightness / 100f).coerceIn(0f, 1f)
++            warmth = (state.warmth / 100f).coerceIn(0f, 1f)
++        }
++    }
++
++    LaunchedEffect(manager) {
++        while (currentCoroutineContext().isActive) {
++            refreshFromManager()
++            delay(FRONTLIGHT_STATE_REFRESH_MILLIS)
++        }
++    }
++
++    Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 6.dp) {
++        Neo2FrontLightControls(
++            available = available,
++            enabled = enabled,
++            brightness = brightness,
++            warmth = warmth,
++            onEnabledChange = { requested ->
++                manager?.setEnabled(requested)
++                scope.launch {
++                    delay(FRONTLIGHT_REQUEST_REFRESH_MILLIS)
++                    refreshFromManager()
++                }
++            },
++            onBrightnessChange = {
++                dragging = true
++                brightness = it
++            },
++            onWarmthChange = {
++                dragging = true
++                warmth = it
++            },
++            onValueChangeFinished = {
++                dragging = false
++                manager?.submitManualRequest(
++                    (brightness * 100).roundToInt(),
++                    (warmth * 100).roundToInt(),
++                )
++                scope.launch {
++                    delay(FRONTLIGHT_REQUEST_REFRESH_MILLIS)
++                    refreshFromManager()
++                }
++            },
++        )
++    }
++}
++
++/** Manager-backed replacement for the inert platform-brightness slider in expanded QS. */
++@Composable
++fun Neo2QuickSettingsBrightnessSliderComposable(modifier: Modifier = Modifier) {
++    val manager = remember { Neo2FrontLightManager.connect() }
++    val initial = remember(manager) { manager?.state }
++    val brightnessContentDescription =
++        stringResource(R.string.neo2_frontlight_brightness_content_description)
++    val scope = rememberCoroutineScope()
++    var available by remember { mutableStateOf(initial?.available == true) }
++    var dragging by remember { mutableStateOf(false) }
++    var brightness by remember {
++        mutableFloatStateOf(((initial?.brightness ?: 50) / 100f).coerceIn(0f, 1f))
++    }
++
++    fun refreshFromManager() {
++        val state = manager?.state
++        available = state?.available == true
++        if (state != null && state.available && !dragging) {
++            brightness = (state.brightness / 100f).coerceIn(0f, 1f)
++        }
++    }
++
++    LaunchedEffect(manager) {
++        while (currentCoroutineContext().isActive) {
++            refreshFromManager()
++            delay(FRONTLIGHT_STATE_REFRESH_MILLIS)
++        }
++    }
++
++    Surface(modifier = modifier, color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
++        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
++            Text(text = stringResource(R.string.neo2_frontlight_label))
++            Slider(
++                value = brightness,
++                onValueChange = {
++                    dragging = true
++                    brightness = it
++                },
++                onValueChangeFinished = {
++                    dragging = false
++                    manager?.submitBrightnessRequest((brightness * 100).roundToInt())
++                    scope.launch {
++                        delay(FRONTLIGHT_REQUEST_REFRESH_MILLIS)
++                        refreshFromManager()
++                    }
++                },
++                enabled = available,
++                modifier =
++                    Modifier.fillMaxWidth()
++                        .testTag(NEO2_QS_FRONTLIGHT_BRIGHTNESS_TEST_TAG)
++                        .semantics { contentDescription = brightnessContentDescription },
++            )
++        }
++    }
++}
++
++/** Stateless content; the caller owns transient drag state and final submissions. */
++@Composable
++internal fun Neo2FrontLightControls(
++    available: Boolean = true,
++    enabled: Boolean,
++    brightness: Float,
++    warmth: Float,
++    onEnabledChange: (Boolean) -> Unit,
++    onBrightnessChange: (Float) -> Unit,
++    onWarmthChange: (Float) -> Unit,
++    onValueChangeFinished: () -> Unit,
++) {
++    Column(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
++        Row(
++            modifier = Modifier.fillMaxWidth(),
++            horizontalArrangement = Arrangement.SpaceBetween,
++            verticalAlignment = Alignment.CenterVertically,
++        ) {
++            Text(text = stringResource(R.string.neo2_frontlight_label))
++            Switch(
++                checked = enabled && available,
++                onCheckedChange = onEnabledChange,
++                enabled = available,
++                modifier = Modifier.testTag(NEO2_FRONTLIGHT_SWITCH_TEST_TAG),
++            )
++        }
++        Text(text = stringResource(R.string.neo2_frontlight_brightness_label))
++        Slider(
++            value = brightness,
++            onValueChange = onBrightnessChange,
++            onValueChangeFinished = onValueChangeFinished,
++            enabled = available && enabled,
++            modifier = Modifier.fillMaxWidth().testTag(NEO2_FRONTLIGHT_BRIGHTNESS_TEST_TAG),
++        )
++        Text(text = stringResource(R.string.neo2_frontlight_warmth_label))
++        Slider(
++            value = warmth,
++            onValueChange = onWarmthChange,
++            onValueChangeFinished = onValueChangeFinished,
++            enabled = available && enabled,
++            modifier = Modifier.fillMaxWidth().testTag(NEO2_FRONTLIGHT_WARMTH_TEST_TAG),
++        )
++    }
++}
++
++internal const val NEO2_FRONTLIGHT_SWITCH_TEST_TAG = "neo2_frontlight_switch"
++internal const val NEO2_FRONTLIGHT_BRIGHTNESS_TEST_TAG = "neo2_frontlight_brightness"
++internal const val NEO2_FRONTLIGHT_WARMTH_TEST_TAG = "neo2_frontlight_warmth"
++internal const val NEO2_QS_FRONTLIGHT_BRIGHTNESS_TEST_TAG = "neo2_qs_frontlight_brightness"
++private const val FRONTLIGHT_STATE_REFRESH_MILLIS = 1_000L
++private const val FRONTLIGHT_REQUEST_REFRESH_MILLIS = 50L
+diff --git a/packages/SystemUI/tests/src/com/android/systemui/qs/tiles/Neo2FrontLightTileTest.java b/packages/SystemUI/tests/src/com/android/systemui/qs/tiles/Neo2FrontLightTileTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..cfb73b5b3a84fec9557109a7938c93412cf655b9
+--- /dev/null
++++ b/packages/SystemUI/tests/src/com/android/systemui/qs/tiles/Neo2FrontLightTileTest.java
+@@ -0,0 +1,163 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ */
++
++package com.android.systemui.qs.tiles;
++
++import static com.google.common.truth.Truth.assertThat;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import android.content.Intent;
++import android.content.res.XmlResourceParser;
++import android.neo2.Neo2FrontLightManager;
++import android.os.Handler;
++import android.testing.TestableLooper;
++
++import androidx.test.ext.junit.runners.AndroidJUnit4;
++import androidx.test.filters.SmallTest;
++
++import com.android.dx.mockito.inline.extended.ExtendedMockito;
++import com.android.internal.logging.InstanceId;
++import com.android.internal.logging.MetricsLogger;
++import com.android.systemui.SysuiTestCase;
++import com.android.systemui.classifier.FalsingManagerFake;
++import com.android.systemui.plugins.ActivityStarter;
++import com.android.systemui.plugins.statusbar.StatusBarStateController;
++import com.android.systemui.qs.QSHost;
++import com.android.systemui.qs.QsEventLogger;
++import com.android.systemui.qs.dagger.QSModule;
++import com.android.systemui.qs.logging.QSLogger;
++import com.android.systemui.qs.shared.model.TileCategory;
++import com.android.systemui.qs.tileimpl.QSTileImpl;
++import com.android.systemui.qs.tiles.base.shared.model.QSTileConfig;
++import com.android.systemui.res.R;
++
++import org.junit.After;
++import org.junit.Before;
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.mockito.MockitoSession;
++import org.xmlpull.v1.XmlPullParser;
++
++@RunWith(AndroidJUnit4.class)
++@TestableLooper.RunWithLooper(setAsMainLooper = true)
++@SmallTest
++public class Neo2FrontLightTileTest extends SysuiTestCase {
++    private MockitoSession mSession;
++    private Neo2FrontLightManager mManager;
++    private Neo2FrontLightTile mTile;
++
++    @Before
++    public void setUp() {
++        mManager = mock(Neo2FrontLightManager.class);
++        mSession = ExtendedMockito.mockitoSession()
++                .mockStatic(Neo2FrontLightManager.class)
++                .startMocking();
++        when(Neo2FrontLightManager.connect()).thenReturn(mManager);
++        when(mManager.getState()).thenReturn(
++                new Neo2FrontLightManager.State(true, true, 60, 40));
++
++        TestableLooper looper = TestableLooper.get(this);
++        QSHost host = mock(QSHost.class);
++        when(host.getContext()).thenReturn(mContext);
++        when(host.getUserContext()).thenReturn(mContext);
++        mTile = new Neo2FrontLightTile(
++                host,
++                mock(QsEventLogger.class),
++                looper.getLooper(),
++                new Handler(looper.getLooper()),
++                new FalsingManagerFake(),
++                mock(MetricsLogger.class),
++                mock(StatusBarStateController.class),
++                mock(ActivityStarter.class),
++                mock(QSLogger.class));
++    }
++
++    @After
++    public void tearDown() {
++        mSession.finishMocking();
++    }
++
++    @Test
++    public void clickTogglesManagerOwnedEnabledState() {
++        mTile.handleClick(null);
++
++        verify(mManager).setEnabled(false);
++    }
++
++    @Test
++    public void refreshIgnoresOptimisticArgumentAndUsesManagerState() {
++        mTile.refreshState(false);
++        TestableLooper.get(this).processAllMessages();
++
++        assertThat(mTile.getState().value).isTrue();
++        assertThat(mTile.getState().contentDescription.toString()).contains("60% brightness");
++        assertThat(iconResource()).isEqualTo(R.drawable.ic_device_light_on);
++    }
++
++    @Test
++    public void inactiveStateUsesFrontLightOffIcon() {
++        when(mManager.getState()).thenReturn(
++                new Neo2FrontLightManager.State(true, false, 60, 40));
++        mTile.refreshState();
++        TestableLooper.get(this).processAllMessages();
++
++        assertThat(iconResource()).isEqualTo(R.drawable.ic_device_light_off);
++    }
++
++    @Test
++    public void unavailableStatePublishesAccessibleUnavailableMetadata() {
++        when(mManager.getState()).thenReturn(
++                new Neo2FrontLightManager.State(false, false, 50, 50));
++        mTile.refreshState();
++        TestableLooper.get(this).processAllMessages();
++
++        assertThat(mTile.getState().contentDescription.toString()).contains("unavailable");
++        assertThat(iconResource()).isEqualTo(R.drawable.ic_device_light_off);
++    }
++
++    @Test
++    public void editorConfigUsesComposeCompatibleFrontLightIconAndDisplayCategory()
++            throws Exception {
++        QsEventLogger eventLogger = mock(QsEventLogger.class);
++        when(eventLogger.getNewInstanceId()).thenReturn(InstanceId.fakeInstanceId(730));
++
++        QSTileConfig config = QSModule.provideNeo2FrontLightTileConfig(eventLogger);
++
++        int iconRes = config.getUiConfig().getIconRes();
++        assertThat(iconRes).isEqualTo(R.drawable.ic_device_light_on);
++        assertThat(config.getUiConfig().getLabelRes()).isEqualTo(R.string.neo2_frontlight_label);
++        assertThat(config.getCategory()).isEqualTo(TileCategory.DISPLAY);
++
++        XmlResourceParser parser = mContext.getResources().getXml(iconRes);
++        try {
++            int event;
++            do {
++                event = parser.next();
++            } while (event != XmlPullParser.START_TAG && event != XmlPullParser.END_DOCUMENT);
++            assertThat(event).isEqualTo(XmlPullParser.START_TAG);
++            assertThat(parser.getName()).isEqualTo("vector");
++        } finally {
++            parser.close();
++        }
++    }
++
++    @Test
++    public void longClickOpensNativeFrontLightDialog() {
++        Intent intent = mTile.getLongClickIntent();
++
++        assertThat(intent.getAction()).isEqualTo(Intent.ACTION_SHOW_BRIGHTNESS_DIALOG);
++        assertThat(intent.getPackage()).isEqualTo(mContext.getPackageName());
++        assertThat(intent.getBooleanExtra(
++                Intent.EXTRA_BRIGHTNESS_DIALOG_IS_FULL_WIDTH, false)).isTrue();
++    }
++
++    private int iconResource() {
++        return ((QSTileImpl.DrawableIconWithRes) mTile.getState().icon).getResourceId();
++    }
++}
+diff --git a/packages/SystemUI/tests/src/com/android/systemui/settings/brightness/Neo2FrontLightSliderTest.kt b/packages/SystemUI/tests/src/com/android/systemui/settings/brightness/Neo2FrontLightSliderTest.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..7d1552014d4d166d443488b94fc03c17158e29a5
+--- /dev/null
++++ b/packages/SystemUI/tests/src/com/android/systemui/settings/brightness/Neo2FrontLightSliderTest.kt
+@@ -0,0 +1,110 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ */
++
++package com.android.systemui.settings.brightness
++
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableFloatStateOf
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.test.SemanticsNodeInteraction
++import androidx.compose.ui.test.assertIsNotEnabled
++import androidx.compose.ui.test.junit4.createComposeRule
++import androidx.compose.ui.test.onNodeWithTag
++import androidx.compose.ui.test.performClick
++import androidx.compose.ui.test.performTouchInput
++import androidx.compose.ui.test.swipeRight
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import androidx.test.filters.SmallTest
++import com.android.systemui.SysuiTestCase
++import kotlin.math.roundToInt
++import org.junit.Assert.assertEquals
++import org.junit.Rule
++import org.junit.Test
++import org.junit.runner.RunWith
++
++@SmallTest
++@RunWith(AndroidJUnit4::class)
++class Neo2FrontLightSliderTest : SysuiTestCase() {
++
++    @get:Rule val composeRule = createComposeRule()
++
++    @Test
++    fun dragUpdatesOnlyTransientValueAndReleaseSubmitsOneAtomicPair() {
++        var enabled by mutableStateOf(true)
++        var brightness by mutableFloatStateOf(0.5f)
++        var warmth by mutableFloatStateOf(0.75f)
++        val submittedValues = mutableListOf<Pair<Int, Int>>()
++        composeRule.setContent {
++            Neo2FrontLightControls(
++                enabled = enabled,
++                brightness = brightness,
++                warmth = warmth,
++                onEnabledChange = { enabled = it },
++                onBrightnessChange = { brightness = it },
++                onWarmthChange = { warmth = it },
++                onValueChangeFinished = {
++                    submittedValues +=
++                        (brightness * 100).roundToInt() to (warmth * 100).roundToInt()
++                },
++            )
++        }
++
++        brightnessSlider().performTouchInput { swipeRight() }
++
++        composeRule.runOnIdle {
++            assertEquals(listOf(100 to 75), submittedValues)
++        }
++    }
++
++    @Test
++    fun switchChangesOnlyEnabledState() {
++        var enabled by mutableStateOf(true)
++        val enabledValues = mutableListOf<Boolean>()
++        composeRule.setContent {
++            Neo2FrontLightControls(
++                enabled = enabled,
++                brightness = 0.5f,
++                warmth = 0.5f,
++                onEnabledChange = {
++                    enabled = it
++                    enabledValues += it
++                },
++                onBrightnessChange = {},
++                onWarmthChange = {},
++                onValueChangeFinished = {},
++            )
++        }
++
++        composeRule.onNodeWithTag(NEO2_FRONTLIGHT_SWITCH_TEST_TAG).performClick()
++
++        composeRule.runOnIdle { assertEquals(listOf(false), enabledValues) }
++    }
++
++    @Test
++    fun unavailableManagerDisablesEveryControl() {
++        composeRule.setContent {
++            Neo2FrontLightControls(
++                available = false,
++                enabled = true,
++                brightness = 0.5f,
++                warmth = 0.5f,
++                onEnabledChange = {},
++                onBrightnessChange = {},
++                onWarmthChange = {},
++                onValueChangeFinished = {},
++            )
++        }
++
++        composeRule.onNodeWithTag(NEO2_FRONTLIGHT_SWITCH_TEST_TAG).assertIsNotEnabled()
++        composeRule.onNodeWithTag(NEO2_FRONTLIGHT_BRIGHTNESS_TEST_TAG).assertIsNotEnabled()
++        composeRule.onNodeWithTag(NEO2_FRONTLIGHT_WARMTH_TEST_TAG).assertIsNotEnabled()
++    }
++
++    private fun brightnessSlider(): SemanticsNodeInteraction =
++        composeRule.onNodeWithTag(NEO2_FRONTLIGHT_BRIGHTNESS_TEST_TAG)
++}
+diff --git a/services/core/java/com/android/server/neo2/Neo2FrontLightManagerService.java b/services/core/java/com/android/server/neo2/Neo2FrontLightManagerService.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..21af49b3a4fb44ccd8cd57d019773b3dff9032a1
+--- /dev/null
++++ b/services/core/java/com/android/server/neo2/Neo2FrontLightManagerService.java
+@@ -0,0 +1,513 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ */
++
++package com.android.server.neo2;
++
++import android.content.Context;
++import android.database.ContentObserver;
++import android.hardware.display.DisplayManager;
++import android.net.Uri;
++import android.neo2.INeo2FrontLightManager;
++import android.neo2.Neo2FrontLightManager;
++import android.os.Handler;
++import android.os.HandlerThread;
++import android.os.Binder;
++import android.os.IBinder;
++import android.os.Parcel;
++import android.os.Process;
++import android.os.RemoteException;
++import android.os.ServiceManager;
++import android.os.UserHandle;
++import android.provider.Settings;
++import android.util.Slog;
++import android.view.Display;
++
++import com.android.server.SystemService;
++
++import java.util.concurrent.atomic.AtomicLong;
++
++/**
++ * Sole front-light client for Neo2. Desired state is persistent, all mutation
++ * is serialized on one worker thread, and no value is presented as hardware
++ * readback.
++ */
++public final class Neo2FrontLightManagerService extends SystemService {
++    private static final String TAG = "Neo2FrontLightManager";
++    private static final String CONTROL_SERVICE = "neo2_frontlight_controls";
++    private static final String CONTROL_DESCRIPTOR = "org.neo2.controls.IFrontLightControl";
++    private static final String CONTROL_PERMISSION =
++            "org.neo2.controls.permission.CONTROL_FRONTLIGHT";
++    private static final int CONTROL_TRANSACTION = IBinder.FIRST_CALL_TRANSACTION;
++    private static final int RESULT_APPLIED = 0;
++    private static final int RESULT_CAPPED = 1;
++    private static final int RESULT_OFF = 2;
++    private static final int RESULT_UNAVAILABLE = 3;
++    private static final int RESULT_REJECTED = 4;
++    private static final int RESULT_FAILED = 5;
++    private static final int RESULT_FAILURE_LATCHED = 6;
++    static final int INITIAL_BRIGHTNESS = 50;
++    static final int INITIAL_WARMTH = 50;
++    private static final String INITIALIZATION_MARKER =
++            "neo2_frontlight_initialized";
++    private static final String STATE_PRESENT = "neo2_frontlight_state_present";
++    private static final String STATE_ENABLED = "neo2_frontlight_enabled";
++    private static final String STATE_BRIGHTNESS = "neo2_frontlight_brightness";
++    private static final String STATE_WARMTH = "neo2_frontlight_warmth";
++    private static final String STATE_LAST_BRIGHTNESS = "neo2_frontlight_last_brightness";
++    private static final String STATE_LAST_WARMTH = "neo2_frontlight_last_warmth";
++
++    private final HandlerThread mWorkerThread = new HandlerThread(TAG);
++    private final Handler mHandler;
++    private final DisplayManager mDisplayManager;
++    private final AtomicLong mLatestGeneration = new AtomicLong();
++    private long mScreenEpoch;
++    private long mCompletedOffEpoch = -1;
++    private boolean mDisplayOn;
++    private boolean mSetupComplete;
++    private boolean mStateLoaded;
++    private boolean mWakeRestorePending;
++    private boolean mDrainScheduled;
++    private Request mPending;
++    private boolean mEnabled = true;
++    private int mDesiredBrightness = INITIAL_BRIGHTNESS;
++    private int mDesiredWarmth = INITIAL_WARMTH;
++    private int mLastBrightness = INITIAL_BRIGHTNESS;
++    private int mLastWarmth = INITIAL_WARMTH;
++    private volatile PublishedState mPublishedState =
++            new PublishedState(true, INITIAL_BRIGHTNESS, INITIAL_WARMTH);
++    private final InitializationTracker mInitialization = new InitializationTracker();
++    private final ContentObserver mSetupObserver;
++
++    public Neo2FrontLightManagerService(Context context) {
++        super(context);
++        mWorkerThread.start();
++        mHandler = new Handler(mWorkerThread.getLooper());
++        mDisplayManager = context.getSystemService(DisplayManager.class);
++        mSetupObserver = new ContentObserver(mHandler) {
++            @Override
++            public void onChange(boolean selfChange, Uri uri) {
++                handleSetupStateChanged();
++            }
++        };
++    }
++
++    @Override
++    public void onStart() {
++        publishBinderService(Neo2FrontLightManager.SERVICE_NAME, new BinderService());
++    }
++
++    @Override
++    public void onBootPhase(int phase) {
++        if (phase != SystemService.PHASE_SYSTEM_SERVICES_READY) {
++            return;
++        }
++        getContext().getContentResolver().registerContentObserver(
++                Settings.Secure.getUriFor(Settings.Secure.USER_SETUP_COMPLETE), false,
++                mSetupObserver, UserHandle.USER_SYSTEM);
++        mDisplayManager.registerDisplayListener(
++                mDisplayListener, mHandler, DisplayManager.EVENT_TYPE_DISPLAY_STATE);
++        mHandler.post(this::loadState);
++    }
++
++    private final DisplayManager.DisplayListener mDisplayListener =
++            new DisplayManager.DisplayListener() {
++        @Override
++        public void onDisplayAdded(int displayId) {}
++
++        @Override
++        public void onDisplayRemoved(int displayId) {}
++
++        @Override
++        public void onDisplayChanged(int displayId) {
++            if (displayId != Display.DEFAULT_DISPLAY) return;
++            handleDisplayState(readDisplayOn());
++        }
++    };
++
++    private final class BinderService extends INeo2FrontLightManager.Stub {
++        @Override
++        public int submitManualRequest(int brightnessPercent, int warmthPercent) {
++            enforceManagerAccess();
++            if (!isPercent(brightnessPercent) || !isPercent(warmthPercent)) {
++                return RESULT_REJECTED;
++            }
++            long generation = mLatestGeneration.incrementAndGet();
++            mHandler.post(() -> queueManual(generation, brightnessPercent, warmthPercent));
++            return Neo2FrontLightManager.RESULT_QUEUED;
++        }
++
++        @Override
++        public int submitBrightnessRequest(int brightnessPercent) {
++            enforceManagerAccess();
++            if (!isPercent(brightnessPercent)) return RESULT_REJECTED;
++            long generation = mLatestGeneration.incrementAndGet();
++            mHandler.post(() -> queueBrightness(generation, brightnessPercent));
++            return Neo2FrontLightManager.RESULT_QUEUED;
++        }
++
++        @Override
++        public int setEnabled(boolean enabled) {
++            enforceManagerAccess();
++            long generation = mLatestGeneration.incrementAndGet();
++            mHandler.post(() -> queueEnabled(generation, enabled));
++            return Neo2FrontLightManager.RESULT_QUEUED;
++        }
++
++        @Override
++        public int[] getState() {
++            enforceManagerAccess();
++            return mPublishedState.toArray();
++        }
++
++        private void enforceManagerAccess() {
++            if (Binder.getCallingUid() != Process.SYSTEM_UID) {
++                getContext().enforceCallingOrSelfPermission(CONTROL_PERMISSION, TAG);
++            }
++        }
++    }
++
++    private void queueManual(long generation, int brightness, int warmth) {
++        if (generation != mLatestGeneration.get()) return;
++        updateDesired(brightness, warmth);
++        queueDesiredOrOff(generation, Request.KIND_MANUAL);
++    }
++
++    private void queueBrightness(long generation, int brightness) {
++        if (generation != mLatestGeneration.get()) return;
++        Request request = nativeBrightnessRequest(generation, brightness, mDesiredWarmth);
++        updateDesired(request.brightness, request.warmth);
++        queueDesiredOrOff(generation, Request.KIND_BRIGHTNESS);
++    }
++
++    private void queueEnabled(long generation, boolean enabled) {
++        if (generation != mLatestGeneration.get()) return;
++        mEnabled = enabled;
++        persistState();
++        publishState();
++        queueDesiredOrOff(generation, Request.KIND_MANUAL);
++    }
++
++    private void updateDesired(int brightness, int warmth) {
++        if (brightness > 0) {
++            mEnabled = true;
++            mDesiredBrightness = brightness;
++            mDesiredWarmth = warmth;
++            mLastBrightness = brightness;
++            mLastWarmth = warmth;
++        } else {
++            mEnabled = false;
++        }
++        persistState();
++        publishState();
++    }
++
++    private void queueDesiredOrOff(long generation, int kind) {
++        if (!mStateLoaded || !mSetupComplete) return;
++        mPending = selectPhysicalRequest(generation, kind, mDisplayOn,
++                mCompletedOffEpoch == mScreenEpoch, mWakeRestorePending, mEnabled,
++                mDesiredBrightness, mDesiredWarmth, mScreenEpoch);
++        if (mPending == null) return;
++        scheduleDrain();
++    }
++
++    static Request selectPhysicalRequest(long generation, int kind, boolean displayOn,
++            boolean offCompleted, boolean wakeRestorePending, boolean enabled,
++            int brightness, int warmth, long epoch) {
++        if (!displayOn && offCompleted) return null;
++        if (!displayOn || wakeRestorePending || !enabled) {
++            return Request.off(generation, epoch);
++        }
++        return Request.user(kind, generation, brightness, warmth);
++    }
++
++    /** Native brightness preserves the manager-owned warmth read on the serialized handler. */
++    static Request nativeBrightnessRequest(long generation, int brightness, int acceptedWarmth) {
++        return Request.brightness(generation, brightness, acceptedWarmth);
++    }
++
++    private void loadState() {
++        boolean present = getSecureInt(STATE_PRESENT, 0) != 0;
++        if (present) {
++            mEnabled = getSecureInt(STATE_ENABLED, 1) != 0;
++            mDesiredBrightness = sanitizeNonzero(
++                    getSecureInt(STATE_BRIGHTNESS, INITIAL_BRIGHTNESS), INITIAL_BRIGHTNESS);
++            mDesiredWarmth = sanitizePercent(
++                    getSecureInt(STATE_WARMTH, INITIAL_WARMTH), INITIAL_WARMTH);
++            mLastBrightness = sanitizeNonzero(
++                    getSecureInt(STATE_LAST_BRIGHTNESS, mDesiredBrightness), mDesiredBrightness);
++            mLastWarmth = sanitizePercent(
++                    getSecureInt(STATE_LAST_WARMTH, mDesiredWarmth), mDesiredWarmth);
++        }
++        mInitialization.loadConsumed(Settings.Secure.getIntForUser(
++                getContext().getContentResolver(), INITIALIZATION_MARKER, 0,
++                UserHandle.USER_SYSTEM) != 0);
++        mDisplayOn = readDisplayOn();
++        mStateLoaded = true;
++        publishState();
++        persistState();
++        handleSetupStateChanged();
++    }
++
++    private void handleSetupStateChanged() {
++        if (!mStateLoaded || mSetupComplete || getSecureInt(
++                Settings.Secure.USER_SETUP_COMPLETE, 0) == 0) return;
++        mSetupComplete = true;
++        long generation = mLatestGeneration.incrementAndGet();
++        mInitialization.begin(generation);
++        queueDesiredOrOff(generation, Request.KIND_INITIALIZATION);
++    }
++
++    private void handleDisplayState(boolean displayOn) {
++        if (!mStateLoaded || displayOn == mDisplayOn) return;
++        if (displayOn) {
++            handleDisplayOn();
++        } else {
++            handleDisplayOff();
++        }
++    }
++
++    private void handleDisplayOff() {
++        mDisplayOn = false;
++        mWakeRestorePending = false;
++        mCompletedOffEpoch = -1;
++        mScreenEpoch++;
++        mPending = Request.off(mLatestGeneration.incrementAndGet(), mScreenEpoch);
++        scheduleDrain();
++    }
++
++    private void handleDisplayOn() {
++        mDisplayOn = true;
++        if (!mSetupComplete) return;
++        if (mCompletedOffEpoch == mScreenEpoch) {
++            queueDesired();
++        } else {
++            mWakeRestorePending = true;
++        }
++    }
++
++    private void queueDesired() {
++        mWakeRestorePending = false;
++        long generation = mLatestGeneration.incrementAndGet();
++        mPending = mEnabled
++                ? Request.restore(generation, mDesiredBrightness, mDesiredWarmth)
++                : Request.off(generation, mScreenEpoch);
++        scheduleDrain();
++    }
++
++    private void scheduleDrain() {
++        if (mDrainScheduled) return;
++        mDrainScheduled = true;
++        mHandler.post(this::drainOne);
++    }
++
++    private void drainOne() {
++        Request request = mPending;
++        mPending = null;
++        if (request == null) {
++            mDrainScheduled = false;
++            return;
++        }
++        if (request.generation != mLatestGeneration.get()) {
++            continueDrain();
++            return;
++        }
++        int result = invokeCalibratedService(request.brightness, request.warmth);
++        if (request.generation == mLatestGeneration.get()) {
++            consumeCurrentResult(request, result);
++        }
++        continueDrain();
++    }
++
++    private void continueDrain() {
++        if (mPending != null) mHandler.post(this::drainOne);
++        else mDrainScheduled = false;
++    }
++
++    private void consumeCurrentResult(Request request, int result) {
++        boolean successful = result == RESULT_APPLIED || result == RESULT_CAPPED
++                || result == RESULT_OFF;
++        boolean consumed = request.kind == Request.KIND_INITIALIZATION
++                ? mInitialization.finishInitialization(
++                        request.generation, mLatestGeneration.get(), successful)
++                : (request.kind == Request.KIND_MANUAL || request.kind == Request.KIND_BRIGHTNESS)
++                        && mInitialization.finishUserRequest(
++                                request.generation, mLatestGeneration.get(), successful);
++        if (consumed && !Settings.Secure.putIntForUser(getContext().getContentResolver(),
++                INITIALIZATION_MARKER, 1, UserHandle.USER_SYSTEM)) {
++            Slog.w(TAG, "Unable to persist front-light initialization marker");
++        }
++        if (request.kind == Request.KIND_OFF) {
++            if (result == RESULT_OFF) {
++                mCompletedOffEpoch = request.epoch;
++                if (mWakeRestorePending && mDisplayOn) queueDesired();
++            } else {
++                mWakeRestorePending = false;
++            }
++            return;
++        }
++        if (successful && request.kind == Request.KIND_INITIALIZATION) persistState();
++    }
++
++    private int invokeCalibratedService(int brightness, int warmth) {
++        IBinder service = ServiceManager.getService(CONTROL_SERVICE);
++        if (service == null) return RESULT_UNAVAILABLE;
++        Parcel data = Parcel.obtain();
++        Parcel reply = Parcel.obtain();
++        try {
++            data.writeInterfaceToken(CONTROL_DESCRIPTOR);
++            data.writeInt(brightness);
++            data.writeInt(warmth);
++            if (!service.transact(CONTROL_TRANSACTION, data, reply, 0)) return RESULT_FAILED;
++            reply.readException();
++            return reply.readInt();
++        } catch (RemoteException | RuntimeException e) {
++            Slog.w(TAG, "Calibrated front-light request failed", e);
++            return RESULT_FAILED;
++        } finally {
++            reply.recycle();
++            data.recycle();
++        }
++    }
++
++    private boolean readDisplayOn() {
++        Display display = mDisplayManager.getDisplay(Display.DEFAULT_DISPLAY);
++        return display != null && display.getState() == Display.STATE_ON;
++    }
++
++    private int getSecureInt(String key, int defaultValue) {
++        return Settings.Secure.getIntForUser(getContext().getContentResolver(), key,
++                defaultValue, UserHandle.USER_SYSTEM);
++    }
++
++    private void persistState() {
++        boolean success = putSecureInt(STATE_ENABLED, mEnabled ? 1 : 0)
++                & putSecureInt(STATE_BRIGHTNESS, mDesiredBrightness)
++                & putSecureInt(STATE_WARMTH, mDesiredWarmth)
++                & putSecureInt(STATE_LAST_BRIGHTNESS, mLastBrightness)
++                & putSecureInt(STATE_LAST_WARMTH, mLastWarmth)
++                & putSecureInt(STATE_PRESENT, 1);
++        if (!success) Slog.w(TAG, "Unable to persist desired front-light state");
++    }
++
++    private boolean putSecureInt(String key, int value) {
++        return Settings.Secure.putIntForUser(getContext().getContentResolver(), key, value,
++                UserHandle.USER_SYSTEM);
++    }
++
++    private void publishState() {
++        mPublishedState = new PublishedState(mEnabled,
++                mEnabled ? mDesiredBrightness : mLastBrightness,
++                mEnabled ? mDesiredWarmth : mLastWarmth);
++    }
++
++    private static int sanitizePercent(int value, int fallback) {
++        return isPercent(value) ? value : fallback;
++    }
++
++    private static int sanitizeNonzero(int value, int fallback) {
++        return value >= 1 && value <= 100 ? value : fallback;
++    }
++
++    private static boolean isPercent(int value) {
++        return value >= 0 && value <= 100;
++    }
++
++    static final class PublishedState {
++        final boolean enabled;
++        final int brightness;
++        final int warmth;
++
++        PublishedState(boolean enabled, int brightness, int warmth) {
++            this.enabled = enabled;
++            this.brightness = brightness;
++            this.warmth = warmth;
++        }
++
++        int[] toArray() {
++            return new int[] {enabled ? 1 : 0, brightness, warmth};
++        }
++    }
++
++    static final class Request {
++        static final int KIND_MANUAL = 0;
++        static final int KIND_BRIGHTNESS = 1;
++        static final int KIND_OFF = 2;
++        static final int KIND_RESTORE = 3;
++        static final int KIND_INITIALIZATION = 4;
++        final int kind;
++        final long generation;
++        final long epoch;
++        final int brightness;
++        final int warmth;
++
++        private Request(int kind, long generation, long epoch, int brightness, int warmth) {
++            this.kind = kind;
++            this.generation = generation;
++            this.epoch = epoch;
++            this.brightness = brightness;
++            this.warmth = warmth;
++        }
++
++        static Request manual(long generation, int brightness, int warmth) {
++            return new Request(KIND_MANUAL, generation, -1, brightness, warmth);
++        }
++
++        static Request brightness(long generation, int brightness, int warmth) {
++            return new Request(KIND_BRIGHTNESS, generation, -1, brightness, warmth);
++        }
++
++        static Request user(int kind, long generation, int brightness, int warmth) {
++            return new Request(kind, generation, -1, brightness, warmth);
++        }
++
++        static Request off(long generation, long epoch) {
++            return new Request(KIND_OFF, generation, epoch, 0, 0);
++        }
++
++        static Request restore(long generation, int brightness, int warmth) {
++            return new Request(KIND_RESTORE, generation, -1, brightness, warmth);
++        }
++
++        static Request initialization(long generation, int brightness, int warmth) {
++            return new Request(KIND_INITIALIZATION, generation, -1, brightness, warmth);
++        }
++    }
++
++    static final class InitializationTracker {
++        private boolean mLoaded;
++        private boolean mAttempted;
++        private boolean mConsumed;
++        private long mInitializationGeneration = -1;
++
++        void loadConsumed(boolean consumed) {
++            mLoaded = true;
++            mConsumed = consumed;
++        }
++
++        boolean begin(long generation) {
++            if (!mLoaded || mAttempted || mConsumed) return false;
++            mAttempted = true;
++            mInitializationGeneration = generation;
++            return true;
++        }
++
++        boolean finishInitialization(long generation, long currentGeneration, boolean success) {
++            if (mConsumed || !success || generation != currentGeneration
++                    || generation != mInitializationGeneration) {
++                return false;
++            }
++            mConsumed = true;
++            return true;
++        }
++
++        boolean finishUserRequest(long generation, long currentGeneration, boolean success) {
++            if (mConsumed || !success || generation != currentGeneration) return false;
++            mConsumed = true;
++            return true;
++        }
++    }
++}
+diff --git a/services/java/com/android/server/SystemServer.java b/services/java/com/android/server/SystemServer.java
+index 3ea580823df65913272d00c9735a2fa9ac5d1427..76856d18a0919ff8f8902f63054db2fa742065d5 100644
+--- a/services/java/com/android/server/SystemServer.java
++++ b/services/java/com/android/server/SystemServer.java
+@@ -210,6 +210,7 @@ import com.android.server.multisensory.MultisensoryService;
+ import com.android.server.musicrecognition.MusicRecognitionManagerService;
+ import com.android.server.net.NetworkManagementService;
+ import com.android.server.net.NetworkPolicyManagerService;
++import com.android.server.neo2.Neo2FrontLightManagerService;
+ import com.android.server.net.watchlist.NetworkWatchlistService;
+ import com.android.server.notification.NotificationManagerService;
+ import com.android.server.oemlock.OemLockService;
+@@ -1548,5 +1549,8 @@ public final class SystemServer implements Dumpable {
+      * Starts a miscellaneous grab bag of stuff that has yet to be refactored and organized.
+      */
+     private void startOtherServices(@NonNull TimingsTraceAndSlog t) {
++        t.traceBegin("StartNeo2FrontLightManager");
++        mSystemServiceManager.startService(Neo2FrontLightManagerService.class);
++        t.traceEnd();
+         t.traceBegin("startOtherServices");
+         mSystemServiceManager.updateOtherServicesStartIndex();

@@ -1,7 +1,8 @@
 # SHA-256 lock for the exact vendor-owned runtime bytes named in
 # vendor-files.txt. It contains no vendor bytes. The front-light configuration
-# is deliberately excluded: the checked-in extractor creates a fail-closed
-# local placeholder and setup validates its schema separately.
+# is deliberately excluded because the checked-in extractor derives an
+# owner-local, editable file from active stock resources and setup validates
+# its schema separately.
 f6045e2bb499562e520285c4dbf39468282ee3d18020ccaeb2889d868817799b  libEink_Kaleido_render.so
 201242d1c6e122429b123dc7088d814b1f7f7173a9cc7959aeb849972aefa16d  libeink.so
 c19568e147dbd4d0de68e2213dea23bff9aeafe916d219a5ceef952dc62c33b7  libeink_color.so

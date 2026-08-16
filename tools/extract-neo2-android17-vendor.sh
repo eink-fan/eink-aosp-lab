@@ -6,17 +6,26 @@ repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 profile="$repo_root/profiles/neo2-android17"
 serial=""
 output=""
-usage() { printf '%s\n' "usage: $0 --output NEW_DIRECTORY [--serial SERIAL]"; }
+frontlight_model="$profile/frontlight-model.env"
+usage() {
+  printf '%s\n' \
+    "usage: $0 --output NEW_DIRECTORY [--serial SERIAL] [--frontlight-model MODEL_ENV]"
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --output) output=${2:?missing output path}; shift 2 ;;
     --serial) serial=${2:?missing serial}; shift 2 ;;
+    --frontlight-model) frontlight_model=${2:?missing model path}; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 64 ;;
   esac
 done
 [[ -n "$output" && ! -e "$output" ]] || { usage >&2; exit 64; }
+[[ -f "$frontlight_model" ]] || {
+  printf 'error: front-light model is unavailable: %s\n' "$frontlight_model" >&2
+  exit 64
+}
 output_parent=$output
 while [[ ! -e "$output_parent" ]]; do output_parent=$(dirname "$output_parent"); done
 output_parent=$(CDPATH= cd -- "$output_parent" && pwd -P)
@@ -27,6 +36,7 @@ case "$output_parent" in
 esac
 command -v adb >/dev/null || { printf '%s\n' 'error: adb is unavailable' >&2; exit 1; }
 command -v sha256sum >/dev/null || { printf '%s\n' 'error: sha256sum is unavailable' >&2; exit 1; }
+command -v python3 >/dev/null || { printf '%s\n' 'error: python3 is unavailable' >&2; exit 1; }
 if [[ -z "$serial" ]]; then
   mapfile -t devices < <(adb devices | awk 'NR > 1 && $2 == "device" { print $1 }')
   [[ ${#devices[@]} == 1 ]] || { printf '%s\n' 'error: require one authorized device or --serial' >&2; exit 1; }
@@ -54,12 +64,27 @@ while IFS= read -r destination || [[ -n "$destination" ]]; do
   esac
 done < "$profile/vendor-files.txt"
 
-# A panel-only build needs this file present, but a placeholder keeps the
-# front-light path disabled until the owner derives their local calibration.
-cat > "$output/frontlight/neo2_frontlight_calibration.conf" <<'EOF'
-schema=neo2-frontlight-v1
-enabled=false
-EOF
+# Capture only model calibration resources from the owner's running stock
+# system. The raw capture is temporary and is never staged into the payload.
+frontlight_capture=$(mktemp "${TMPDIR:-/tmp}/neo2-frontlight-stock.XXXXXX")
+cleanup() { rm -f "$frontlight_capture"; }
+trap cleanup EXIT
+{
+  for resource in brightness_index brightness_cold_power brightness_warm_power; do
+    printf '[android:array/%s]\n' "$resource"
+    "${adb_cmd[@]}" shell cmd overlay lookup android "android:array/$resource" | tr -d '\r'
+  done
+  printf '%s\n' '[all255_bright.json]'
+  printf '%s\n' \
+    'test -r /system/EinkRes/all255_bright.json && cat /system/EinkRes/all255_bright.json' |
+    "${adb_cmd[@]}" shell sh | tr -d '\r'
+} > "$frontlight_capture"
+"$repo_root/tools/prepare-neo2-frontlight-calibration.sh" \
+  --input "$frontlight_capture" \
+  --output "$output/frontlight/neo2_frontlight_calibration.conf" \
+  --model "$frontlight_model"
+rm -f "$frontlight_capture"
+trap - EXIT
 (
   cd "$output"
   find . -type f ! -name SHA256SUMS -exec sha256sum {} \; | LC_ALL=C sort > SHA256SUMS

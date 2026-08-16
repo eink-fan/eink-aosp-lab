@@ -1,0 +1,3 @@
+# Unified-diff context markers are significant leading bytes, including on
+# otherwise blank context lines. Validate the applied AOSP trees separately.
+*.patch whitespace=-blank-at-eol

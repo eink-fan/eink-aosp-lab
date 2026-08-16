@@ -55,10 +55,11 @@ stages only the owner-extracted payload. The build script produces
   without a separately authorized, directly supervised experiment. An
   operator may set the documented volatile property to `0` for a capture-only
   diagnostic boot.
-- The extractor creates a fail-closed front-light placeholder so a panel build
-  can proceed without inventing calibration. This public profile also grants
-  no SurfaceFlinger front-light write permission; do not claim front-light
-  support or re-add that permission without a separately confined design.
+- The extractor derives an editable calibration from read-only stock resources
+  on the owner's device. The base profile grants no front-light write access;
+  `--with-frontlight-controls` adds only the two model-typed primary-node
+  permissions. Do not broaden them to generic sysfs or claim hardware readback,
+  physical completion, or qualification from a build alone.
 - Do not alter stock partitions. A DSU install, one-boot enablement, manual
   reboot, visible interaction, evidence capture, and DSU cleanup are separate
   decisions. Follow `tools/dsu/README.md`; never chain them automatically.

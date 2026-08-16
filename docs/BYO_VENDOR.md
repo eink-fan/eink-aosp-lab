@@ -12,11 +12,18 @@ extracted material outside Git.
 
 For the Neo 2 Android-17 profile, use the checked-in owner-operated ADB
 extractor. It writes a new local payload directory, a source-identity record,
-and an integrity lock, but never uploads or commits those bytes:
+an integrity lock, and a validated front-light calibration generated from the
+stock system's active resource arrays. It never uploads or commits those bytes:
 
 ```sh
 tools/extract-neo2-android17-vendor.sh --output /path/outside/git/neo2-payload
 ```
+
+The checked-in [`frontlight-model.env`](../profiles/neo2-android17/frontlight-model.env)
+contains the model-level endpoint names and neutral, bounded power defaults.
+Copy it outside Git and pass `--frontlight-model` to the extractor if you want
+to tune those local values. The generated calibration remains editable in the
+local payload and is validated again during setup.
 
 For an unsupported device, create an untracked manifest from
 `local.example/vendor-files.local.example`. The manifest is a private list of

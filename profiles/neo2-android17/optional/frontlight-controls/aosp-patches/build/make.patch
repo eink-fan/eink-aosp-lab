@@ -1,0 +1,26 @@
+diff --git a/target/product/gsi/Android.bp b/target/product/gsi/Android.bp
+index 9f1c0ab..f017dd7b54f9419e8c508b2e2020078494cad97b 100644
+--- a/target/product/gsi/Android.bp
++++ b/target/product/gsi/Android.bp
+@@ -220,6 +220,9 @@ android_system_image {
+         "PhotoTable",
+         "preinstalled-packages-platform-aosp-product.xml",
+         "ThemePicker",
++
++        // Platform-signed reference control app.
++        "Neo2Controls",
+ 
+         // B012 Android-17 full-binding product modules.
+         "libneo2_stock_einksfpatch",
+
+diff --git a/target/product/generic_system.mk b/target/product/generic_system.mk
+--- a/target/product/generic_system.mk
++++ b/target/product/generic_system.mk
+@@ -34,6 +34,7 @@ PRODUCT_PACKAGES += \
+     PartnerBookmarksProvider \
+     preinstalled-packages-platform-generic-system.xml \
+     Stk \
++    Neo2Controls \
+     Tag \
+ 
+ # OTA support

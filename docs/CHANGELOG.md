@@ -17,6 +17,10 @@
 - Add host contracts for storage recovery, bounded decode planning, overlay
   composition, lifecycle ordering, diagnostics privacy, and shared-memory
   sizing.
+- Add an opt-in, independently authored AOSP patch proposal for manager-owned
+  front-light controls in Settings and SystemUI. Owner-local extraction derives
+  the calibration from active stock resources, while the optional SELinux
+  policy grants only the two model-typed primary-node writes.
 
 This is a source release, not a device image or daily-driver qualification.
 The pinned public Android profile retains its fail-closed front-light boundary

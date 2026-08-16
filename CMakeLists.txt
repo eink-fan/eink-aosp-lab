@@ -64,3 +64,6 @@ add_test(NAME neo2_android17_profile_test COMMAND neo2_android17_profile_test)
 
 add_test(NAME public_tree_privacy_audit
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tools/audit-public-tree.sh)
+
+add_test(NAME frontlight_local_extraction_test
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/frontlight-local-extraction-test.sh)

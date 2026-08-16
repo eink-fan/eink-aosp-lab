@@ -8,13 +8,18 @@ profile="$repo_root/profiles/neo2-android17"
 workspace=""
 payload=""
 jobs=4
-usage() { printf '%s\n' "usage: $0 --workspace NEW_DIRECTORY --payload LOCAL_PAYLOAD [--jobs N]"; }
+with_frontlight_controls=0
+usage() {
+  printf '%s\n' \
+    "usage: $0 --workspace NEW_DIRECTORY --payload LOCAL_PAYLOAD [--jobs N] [--with-frontlight-controls]"
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --workspace) workspace=${2:?missing workspace}; shift 2 ;;
     --payload) payload=${2:?missing payload}; shift 2 ;;
     --jobs) jobs=${2:?missing jobs}; shift 2 ;;
+    --with-frontlight-controls) with_frontlight_controls=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 64 ;;
   esac
@@ -66,10 +71,11 @@ while IFS= read -r path || [[ -n "$path" ]]; do
   actual=$(sha256sum "$payload/$path" | awk '{ print $1 }')
   [[ "$actual" == "$expected" ]] || { printf 'error: payload hash does not match profile lock: %s\n' "$path" >&2; exit 1; }
 done < "$profile/vendor-files.txt"
-[[ $(awk -F= '$1 == "schema" { print $2; exit }' "$payload/frontlight/neo2_frontlight_calibration.conf" 2>/dev/null) == neo2-frontlight-v1 ]] || {
-  printf '%s\n' 'error: front-light config is absent or malformed' >&2
-  exit 1
-}
+python3 "$repo_root/tools/validate-neo2-frontlight-calibration.py" \
+  "$payload/frontlight/neo2_frontlight_calibration.conf" || {
+    printf '%s\n' 'error: front-light config is absent or malformed' >&2
+    exit 1
+  }
 
 manifest_url=$(awk -F= '$1 == "manifest_url" {print $2}' "$profile/aosp-manifest-source.env")
 manifest_revision=$(awk -F= '$1 == "manifest_revision" {print $2}' "$profile/aosp-manifest-source.env")
@@ -106,6 +112,17 @@ while IFS= read -r patch; do
   git -C "$aosp/$project" apply "$patch"
   git -C "$aosp/$project" diff --check
 done < <(find "$profile/aosp-patches" -type f -name '*.patch' -print | LC_ALL=C sort)
+
+if (( with_frontlight_controls )); then
+  optional_patches="$profile/optional/frontlight-controls/aosp-patches"
+  while IFS= read -r patch; do
+    relative=${patch#"$optional_patches/"}
+    project=${relative%.patch}
+    git -C "$aosp/$project" apply --check "$patch"
+    git -C "$aosp/$project" apply "$patch"
+    git -C "$aosp/$project" diff --check
+  done < <(find "$optional_patches" -type f -name '*.patch' -print | LC_ALL=C sort)
+fi
 
 graft="$aosp/frameworks/native/services/surfaceflinger/Neo2Eink"
 [[ ! -e "$graft" ]] || { printf '%s\n' 'error: Neo2Eink graft already exists' >&2; exit 1; }

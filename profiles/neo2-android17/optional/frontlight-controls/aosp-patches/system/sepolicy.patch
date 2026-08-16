@@ -1,0 +1,64 @@
+diff --git a/private/file.te b/private/file.te
+index 6fdf98c55454fefc01611fd4050f00d218320470..988fd048656eb0e20cd2ced59e63f4049a57dffe 100644
+--- a/private/file.te
++++ b/private/file.te
+@@ -177,6 +177,10 @@ type neo2_frontlight_warm_sysfs, fs_type, sysfs_type, mlstrustedobject;
+ # loading waveform and token/VCOM metadata. This is not generic block access.
+ type neo2_eink_waveform_storage_block_device, dev_type;
+ 
++# Private, signature-protected Binder service. It is published only by
++# the SurfaceFlinger-owned presentation process, never by the app itself.
++type neo2_frontlight_control_service, service_manager_type;
++
+ # /data/per_boot
+ type per_boot_file, file_type, data_file_type, core_data_file_type;
+ 
+diff --git a/private/neo2_frontlight.te b/private/neo2_frontlight.te
+new file mode 100644
+index 0000000000000000000000000000000000000000..9df529a7bcbd847e650fe7ad33693f45efe207d5
+--- /dev/null
++++ b/private/neo2_frontlight.te
+@@ -0,0 +1,14 @@
++# The externally discoverable front-light service is the
++# system-server mediator. SurfaceFlinger's calibrated endpoint remains a
++# private service and accepts calls only from system_server.
++type neo2_frontlight_manager_service, service_manager_type;
++
++add_service(system_server, neo2_frontlight_manager_service)
++allow system_server neo2_frontlight_control_service:service_manager find;
++
++# SystemUI owns Neo2's final-value slider; the platform-signed Controls app
++# owns the paired brightness/warmth controls. Neither may find the calibrated
++# SurfaceFlinger endpoint after the atomic migration.
++allow system_app neo2_frontlight_manager_service:service_manager find;
++allow platform_app neo2_frontlight_manager_service:service_manager find;
++# End of Neo 2 front-light manager policy.
+diff --git a/private/service_contexts b/private/service_contexts
+index de000430b6b1c7c18fa1e51ff0fe27dcda8da0d5..6b1dd6ef59a48f806a559a6c79dfdc69aaaa1126 100644
+--- a/private/service_contexts
++++ b/private/service_contexts
+@@ -1,3 +1,5 @@
++neo2_frontlight          u:object_r:neo2_frontlight_manager_service:s0
++neo2_frontlight_controls u:object_r:neo2_frontlight_control_service:s0
+ android.frameworks.cameraservice.service.ICameraService/default      u:object_r:fwk_camera_service:s0
+ android.frameworks.location.altitude.IAltitudeService/default        u:object_r:fwk_altitude_service:s0
+ android.frameworks.stats.IStats/default                              u:object_r:fwk_stats_service:s0
+diff --git a/private/surfaceflinger.te b/private/surfaceflinger.te
+index 4293b86770fd0c880a5c032004d15a6d256d4104..497cb8735bab30a3e59150336982e4774f962a4a 100644
+--- a/private/surfaceflinger.te
++++ b/private/surfaceflinger.te
+@@ -70,6 +70,14 @@ allow surfaceflinger neo2_eink_waveform_storage_block_device:blk_file { getattr
+ # Traverse the shared /dev/block directory to the two exact typed leaves only.
+ allow surfaceflinger block_device:dir search;
+ 
++# Publish the private control service. The app can only find it; its
++# manifest-declared signature permission remains the request gate.
++add_service(surfaceflinger, neo2_frontlight_control_service)
++
++# Permit writes only to the two model-typed primary front-light leaves.
++allow surfaceflinger neo2_frontlight_cool_sysfs:file { getattr open write };
++allow surfaceflinger neo2_frontlight_warm_sysfs:file { getattr open write };
++
+ 
+ # Access /dev/video1.
+ allow surfaceflinger video_device:dir r_dir_perms;

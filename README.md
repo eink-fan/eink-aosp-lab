@@ -47,10 +47,12 @@ ctest --test-dir /tmp/eink-aosp-lab-build --output-on-failure
   is required.
 
 The only untracked project input is the vendor runtime extracted locally from
-the owner’s device. Setup rejects a payload that is not the profile's locked
-Android-14 Neo 2 runtime, pins the complete AOSP checkout through an immutable
-superproject commit, and records the resolved per-project manifest beside the
-workspace. Check the host, extract, create the workspace, and build:
+the owner’s device. The same read-only extraction derives an editable
+front-light calibration from active stock resources; no calibration table or
+device record is committed. Setup rejects a payload that is not the profile's
+locked Android-14 Neo 2 runtime, pins the complete AOSP checkout through an
+immutable superproject commit, and records the resolved per-project manifest
+beside the workspace. Check the host, extract, create the workspace, and build:
 
 ```sh
 tools/check-host-android17.sh
@@ -63,8 +65,11 @@ tools/build-neo2-android17.sh --workspace /path/to/new/neo2-aosp17
 
 This produces a build artifact only. The confirmed full-binding e-ink
 presenter is enabled by default; continuous submission remains off and bounded
-by a finite diagnostic budget. The public profile deliberately cannot write
-front-light sysfs nodes. DSU installation, one-boot enablement, reboot, and
+by a finite diagnostic budget. The base public profile cannot write front-light
+sysfs nodes unless the optional control-surface bundle is selected.
+That bundle grants access only to the two model-typed primary nodes and consumes
+the owner-local calibration; it remains experimental and does not provide
+hardware readback. DSU installation, one-boot enablement, reboot, and
 interaction are separate deliberate steps; see
 [the DSU handoff guide](tools/dsu/README.md).
 
@@ -72,6 +77,9 @@ The authored source also contains newer host-tested catalog, preview, overlay,
 and portrait-to-panel transformation components. They are included for review
 and porting, but the conservative public profile does not claim that every
 reference component is active or device-qualified in its produced image.
+An opt-in [front-light control-surface proposal](profiles/neo2-android17/optional/frontlight-controls/README.md)
+publishes the manager, Settings, and SystemUI architecture and enables the
+narrow writer when owner-local calibration extraction succeeds.
 
 ## Before publishing
 

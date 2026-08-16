@@ -57,6 +57,13 @@ daily-driver suitability.
    resolved project manifest and hash beside the workspace, applies the
    framework/build/SELinux patches, installs the authored `Neo2Eink` source
    graft, and stages only the user-extracted vendor bytes.
+
+   Builders reviewing the independently authored front-light control surfaces
+   may add `--with-frontlight-controls`. This installs the optional manager,
+   Settings, and SystemUI integration and grants SurfaceFlinger access only to
+   the two model-typed primary front-light nodes. It consumes the editable
+   calibration generated from the owner's stock resources. See
+   [`optional/frontlight-controls`](optional/frontlight-controls/README.md).
 5. The first supported presentation boundary is a full-panel frame using
    `kFullGc16Hint`:
 
@@ -87,9 +94,11 @@ daily-driver suitability.
   This volatile property is cleared by reboot. Continuous submission remains
   off by default with a finite diagnostic budget and must stay off except
   during a separately approved, directly supervised experiment.
-- The public profile intentionally grants SurfaceFlinger no front-light write
-  access. The extracted placeholder configuration is fail-closed. Front-light
-  control is not a supported outcome of this profile.
+- The base profile grants SurfaceFlinger no front-light write access. The
+  optional public control-surface proposal adds only exact cool/warm primary
+  node access and requires a validated owner-local calibration. It is an
+  experimental functional path, not hardware readback or daily-driver
+  qualification.
 - Treat submission acceptance and elapsed time only as queue evidence, never
   physical panel completion.
 - Do not make extracted vendor libraries, waveform/calibration data, stock

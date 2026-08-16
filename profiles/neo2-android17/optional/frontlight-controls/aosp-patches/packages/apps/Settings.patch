@@ -1,0 +1,243 @@
+diff --git a/AndroidManifest.xml b/AndroidManifest.xml
+index c0cd7748c8f2b3cf0f280600cb023aa18257f78c..394c4c59e62d33e6923d55ffa0c1f587b27f5bb6 100644
+--- a/AndroidManifest.xml
++++ b/AndroidManifest.xml
+@@ -17,6 +17,7 @@
+         android:protectionLevel="signature|privileged"/>
+ 
+     <uses-permission android:name="android.permission.REQUEST_NETWORK_SCORES" />
++    <uses-permission android:name="org.neo2.controls.permission.CONTROL_FRONTLIGHT" />
+     <uses-permission android:name="android.permission.WRITE_MEDIA_STORAGE" />
+     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+diff --git a/res/values/strings.xml b/res/values/strings.xml
+index 8246f5be5ae9a85b48e5ee7896bb912562d843fb..460680f3d72f174fd920030e8378485f01b94ecc 100644
+--- a/res/values/strings.xml
++++ b/res/values/strings.xml
+@@ -3197,6 +3197,10 @@
+     <string name="preference_key_auto_brightness" translatable="false">auto_brightness_entry</string>
+     <!-- Sound & display settings screen, setting option name to change brightness level -->
+     <string name="brightness">Brightness level</string>
++    <string name="neo2_frontlight_title">Front light</string>
++    <string name="neo2_frontlight_off">Off · last used <xliff:g id="brightness">%1$d</xliff:g>%% brightness · <xliff:g id="warmth">%2$d</xliff:g>%% warmth</string>
++    <string name="neo2_frontlight_summary"><xliff:g id="brightness">%1$d</xliff:g>%% brightness · <xliff:g id="warmth">%2$d</xliff:g>%% warmth</string>
++    <string name="neo2_frontlight_unavailable">Unavailable</string>
+     <!-- Sound & display settings screen, setting option name to enable adaptive brightness [CHAR LIMIT=30] -->
+     <string name="auto_brightness_title">Adaptive brightness</string>
+     <!-- Description about the feature adaptive brightness -->
+diff --git a/res/xml/display_settings.xml b/res/xml/display_settings.xml
+index 0029ab135d978baba079b82853b6fd962b9b87c1..eba10ad646380d0cf2ebf089cb6c3b4171f2a56d 100644
+--- a/res/xml/display_settings.xml
++++ b/res/xml/display_settings.xml
+@@ -28,7 +28,7 @@
+ 
+         <com.android.settingslib.RestrictedPreference
+             android:key="@string/preference_key_brightness_level"
+-            android:title="@string/brightness"
++            android:title="@string/neo2_frontlight_title"
+             android:persistent="false"
+             settings:keywords="@string/keywords_display_brightness_level"
+             settings:useAdminDisabledSummary="true"
+diff --git a/src/com/android/settings/display/BrightnessLevelPreference.kt b/src/com/android/settings/display/BrightnessLevelPreference.kt
+index 53ece3ee6fc692852ce15a60abc4c2d6335e9f08..a7dfb197f06343d1ae6c1e4b1d0d25c05cb95570 100644
+--- a/src/com/android/settings/display/BrightnessLevelPreference.kt
++++ b/src/com/android/settings/display/BrightnessLevelPreference.kt
+@@ -24,6 +24,7 @@ import android.content.Intent.EXTRA_BRIGHTNESS_DIALOG_IS_FULL_WIDTH
+ import android.hardware.display.BrightnessInfo
+ import android.hardware.display.DisplayManager
+ import android.hardware.display.DisplayManager.DisplayListener
++import android.neo2.Neo2FrontLightManager
+ import android.os.UserHandle
+ import android.os.UserManager
+ import android.provider.Settings.System
+@@ -55,7 +56,6 @@ import com.android.settingslib.metadata.SensitivityLevel
+ import com.android.settingslib.preference.PreferenceBinding
+ import com.android.settingslib.transition.SettingsTransitionHelper
+ import com.android.systemui.shared.Flags.brightnessDialogOnSystemUser
+-import java.math.BigDecimal
+ import java.text.NumberFormat
+ 
+ // LINT.IfChange
+@@ -75,7 +75,7 @@ class BrightnessLevelPreference :
+         get() = R.string.brightness_purpose
+ 
+     override val title: Int
+-        get() = R.string.brightness
++        get() = R.string.neo2_frontlight_title
+ 
+     override val keywords: Int
+         get() = R.string.keywords_display_brightness_level
+@@ -85,8 +85,25 @@ class BrightnessLevelPreference :
+ 
+     override fun tags(context: Context) = arrayOf(KEY_BRIGHTNESS_LEVEL)
+ 
+-    override fun getSummary(context: Context): CharSequence? =
+-        NumberFormat.getPercentInstance().format(context.brightnessPercent)
++    override fun getSummary(context: Context): CharSequence? {
++        val state = Neo2FrontLightManager.connect()?.state
++        return when {
++            state == null || !state.available ->
++                context.getString(R.string.neo2_frontlight_unavailable)
++            state.enabled ->
++                context.getString(
++                    R.string.neo2_frontlight_summary,
++                    state.brightness,
++                    state.warmth,
++                )
++            else ->
++                context.getString(
++                    R.string.neo2_frontlight_off,
++                    state.brightness,
++                    state.warmth,
++                )
++        }
++    }
+ 
+     override fun getEnabledDescription(): String = "This setting must not be restricted by a device administrator."
+ 
+@@ -157,17 +174,15 @@ class BrightnessLevelPreference :
+         // TODO (b/496853329): migrate to using brighntess unit percentage.
+         @Suppress("UNCHECKED_CAST")
+         override fun <T : Any> getValue(key: String, valueType: Class<T>) =
+-            BigDecimal(context.brightnessPercent * 100)
+-                .setScale(0, NumberFormat.getPercentInstance().roundingMode)
+-                .toInt() as T
++            (Neo2FrontLightManager.connect()?.state?.brightness ?: 0) as T
+ 
+         override fun <T : Any> setValue(key: String, valueType: Class<T>, value: T?) {
+             if (value is Int) {
+-                context.displayManager.setBrightness(
+-                    context.display?.displayId ?: android.view.Display.DEFAULT_DISPLAY,
+-                    value.toFloat(),
+-                    DisplayManager.BRIGHTNESS_UNIT_PERCENTAGE,
+-                )
++                val manager = Neo2FrontLightManager.connect() ?: return
++                val state = manager.state
++                if (state.available) {
++                    manager.submitManualRequest(value.coerceIn(0, 100), state.warmth)
++                }
+             }
+         }
+ 
+diff --git a/src/com/android/settings/display/BrightnessLevelPreferenceController.java b/src/com/android/settings/display/BrightnessLevelPreferenceController.java
+index dbb957b40059df6dd7ea21a6fa9a5c6d00dfb756..0143e56e3676c657296eb20fa069e312a4002017 100644
+--- a/src/com/android/settings/display/BrightnessLevelPreferenceController.java
++++ b/src/com/android/settings/display/BrightnessLevelPreferenceController.java
+@@ -30,6 +30,7 @@ import android.hardware.display.BrightnessInfo;
+ import android.hardware.display.DisplayManager;
+ import android.hardware.display.DisplayManager.DisplayListener;
+ import android.net.Uri;
++import android.neo2.Neo2FrontLightManager;
+ import android.os.Handler;
+ import android.os.Looper;
+ import android.os.Process;
+@@ -80,6 +81,13 @@ public class BrightnessLevelPreferenceController extends BasePreferenceControlle
+                     updatedSummary(mPreference);
+                 }
+             };
++    private final Runnable mNeo2SummaryRefresh = new Runnable() {
++        @Override
++        public void run() {
++            updatedSummary(mPreference);
++            mHandler.postDelayed(this, 1000);
++        }
++    };
+ 
+     private final DisplayListener mDisplayListener = new DisplayListener() {
+         @Override
+@@ -138,12 +146,15 @@ public class BrightnessLevelPreferenceController extends BasePreferenceControlle
+         mDisplayManager.registerDisplayListener(mDisplayListener, mHandler,
+                 DisplayManager.EVENT_TYPE_DISPLAY_BRIGHTNESS);
+         updatedSummary(mPreference);
++        mHandler.removeCallbacks(mNeo2SummaryRefresh);
++        mHandler.postDelayed(mNeo2SummaryRefresh, 1000);
+     }
+ 
+     @Override
+     public void onStop() {
+         mContentResolver.unregisterContentObserver(mBrightnessObserver);
+         mDisplayManager.unregisterDisplayListener(mDisplayListener);
++        mHandler.removeCallbacks(mNeo2SummaryRefresh);
+     }
+ 
+     @Override
+@@ -171,7 +182,17 @@ public class BrightnessLevelPreferenceController extends BasePreferenceControlle
+ 
+     private void updatedSummary(Preference preference) {
+         if (preference != null) {
+-            preference.setSummary(NumberFormat.getPercentInstance().format(getCurrentBrightness()));
++            Neo2FrontLightManager manager = Neo2FrontLightManager.connect();
++            Neo2FrontLightManager.State state = manager == null ? null : manager.getState();
++            if (state == null || !state.available) {
++                preference.setSummary(R.string.neo2_frontlight_unavailable);
++            } else if (state.enabled) {
++                preference.setSummary(mContext.getString(R.string.neo2_frontlight_summary,
++                        state.brightness, state.warmth));
++            } else {
++                preference.setSummary(mContext.getString(R.string.neo2_frontlight_off,
++                        state.brightness, state.warmth));
++            }
+         }
+     }
+ 
+diff --git a/tests/robotests/src/com/android/settings/display/BrightnessLevelPreferenceControllerTest.java b/tests/robotests/src/com/android/settings/display/BrightnessLevelPreferenceControllerTest.java
+index 5be9d3c0439fb37b6daa0b30d6302c36ac655a2b..8a4eb5f0f30f80c9c036b9450fb88a3ff68634bd 100644
+--- a/tests/robotests/src/com/android/settings/display/BrightnessLevelPreferenceControllerTest.java
++++ b/tests/robotests/src/com/android/settings/display/BrightnessLevelPreferenceControllerTest.java
+@@ -157,7 +157,7 @@ public class BrightnessLevelPreferenceControllerTest {
+                         0.5f, BrightnessInfo.BRIGHTNESS_MAX_REASON_NONE));
+         controller.onStart();
+ 
+-        verify(mPreference).setSummary("87%");
++        verify(mPreference).setSummary(R.string.neo2_frontlight_unavailable);
+     }
+ 
+     @Test
+@@ -171,7 +171,7 @@ public class BrightnessLevelPreferenceControllerTest {
+ 
+         mController.updateState(mPreference);
+ 
+-        verify(mPreference).setSummary("54%");
++        verify(mPreference).setSummary(R.string.neo2_frontlight_unavailable);
+     }
+ 
+     @Test
+@@ -185,7 +185,7 @@ public class BrightnessLevelPreferenceControllerTest {
+ 
+         mController.updateState(mPreference);
+ 
+-        verify(mPreference).setSummary("87%");
++        verify(mPreference).setSummary(R.string.neo2_frontlight_unavailable);
+     }
+ 
+     @Test
+diff --git a/tests/robotests/src/com/android/settings/display/BrightnessLevelPreferenceTest.kt b/tests/robotests/src/com/android/settings/display/BrightnessLevelPreferenceTest.kt
+index cd26b842614e21ad623b11e0cf3990b0316dc2e4..8ac9044bd39ce6c3dc5c4251e83df216be494897 100644
+--- a/tests/robotests/src/com/android/settings/display/BrightnessLevelPreferenceTest.kt
++++ b/tests/robotests/src/com/android/settings/display/BrightnessLevelPreferenceTest.kt
+@@ -29,7 +29,6 @@ import org.junit.Test
+ import org.junit.runner.RunWith
+ import android.hardware.display.DisplayManager
+ import org.mockito.kotlin.any
+-import org.mockito.kotlin.eq
+ import org.mockito.kotlin.mock
+ import org.mockito.kotlin.never
+ import org.mockito.kotlin.spy
+@@ -71,15 +70,11 @@ class BrightnessLevelPreferenceTest {
+     }
+ 
+     @Test
+-    fun setValue_updatesDisplayManagerBrightness() {
++    fun setValue_neverWritesDisplayBrightness() {
+         preference.storage(context).setValue(
+             BrightnessLevelPreference.KEY, Int::class.javaObjectType, 75)
+ 
+-        verify(displayManager).setBrightness(
+-            eq(Display.DEFAULT_DISPLAY),
+-            eq(75f),
+-            eq(DisplayManager.BRIGHTNESS_UNIT_PERCENTAGE)
+-        )
++        verify(displayManager, never()).setBrightness(any(), any(), any())
+     }
+ 
+     @Test
