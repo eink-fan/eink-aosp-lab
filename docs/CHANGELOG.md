@@ -2,6 +2,14 @@
 
 ## Unreleased source refresh
 
+- Supply the Aura pinned manifest, ordered patches, native graft and Controls
+  integration with owner-local extraction, preparation and build tooling.
+  The public assembly has not been built or device-tested.
+- Supply recovery preparation, separate DSU actions, baseline/readback capture
+  and system-A promotion tooling; document Neo stock-B and AVB preparation.
+- Enable uncapped continuous presentation on Neo 2 and Aura C in every build
+  variant. Keep finite diagnostics and conservative defaults for new models.
+
 - Publish working Aura C Android-14 integration and owner-operated recovery,
   DSU and system-installation instructions with private values left local.
 - Include current Ink Controls source and its host-tested catalog, preference

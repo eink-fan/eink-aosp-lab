@@ -186,8 +186,8 @@ class RenderSurfaceCaptureSession::M3State final {
   // This branch exists only in the separately reviewed M4 output graft. The
   // direct backend's InitializeForOneShot() is called before the first owned
   // snapshot, requires the exact policy/resources/property contract, and
-  // permits a finite loop by default or an explicitly armed, rate-limited
-  // temporary-guest continuous loop.
+  // uses the selected profile default, with a finite diagnostic override
+  // and pacing independent of the lifetime submission budget.
   neo2::eink::android::LowerEngineDirectBackend engine;
   neo2::eink::android::FrontLightDirectBackend front_light;
 #else

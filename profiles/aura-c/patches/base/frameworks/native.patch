@@ -49,26 +49,26 @@ diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine
 index 1d068c9f30..0000000000 100644
 --- a/services/surfaceflinger/CompositionEngine/include/compositionengine/RenderSurfaceCreationArgs.h
 +++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/RenderSurfaceCreationArgs.h
-@@ -17,3 +17,4 @@
+@@ -17,5 +17,6 @@
  #pragma once
-
+ 
  #include <cstdint>
 +#include <functional>
  #include <memory>
-
-@@ -45,3 +46,7 @@ struct RenderSurfaceCreationArgs {
+ 
+@@ -45,4 +46,8 @@ struct RenderSurfaceCreationArgs {
      // The maximum size of the renderengine::ExternalTexture cache
      size_t maxTextureCacheSize = 0;
-
+ 
 +    // B002s weak SurfaceFlinger-owned request path. It can schedule one
 +    // later normal composition, but never grants a worker RenderEngine access.
 +    std::function<bool()> neo2RequestComposite;
 +
  private:
-@@ -78,3 +83,9 @@ public:
+@@ -78,4 +83,10 @@ public:
          return *this;
      }
-
+ 
 +    RenderSurfaceCreationArgsBuilder& setNeo2RequestComposite(
 +            std::function<bool()> requestComposite) {
 +        mArgs.neo2RequestComposite = std::move(requestComposite);

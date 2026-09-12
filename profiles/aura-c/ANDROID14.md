@@ -6,34 +6,14 @@ ARM64 userdebug generic system with the model's e-ink binding.
 
 ## Source and build
 
-Use the AOSP manifest source `https://android.googlesource.com/platform/manifest`,
-revision `e3f9241982f55ef4cec97df0c55e9b87d37a5656`, `default.xml` (the Android-14
-source baseline). Resolve and save a per-project manifest before patching:
+Follow [BUILD.md](BUILD.md) for the owner-payload extraction, pinned checkout,
+ordered `base`, `aura` and `controls` patch series, native source graft, current
+Ink Controls staging, build and DSU packaging commands. The checked-in resolved
+manifest pins each project. The helper supplies the legacy host compatibility
+libraries from that checkout and records preparation identity.
 
-```sh
-repo init -u https://android.googlesource.com/platform/manifest \
-  -b e3f9241982f55ef4cec97df0c55e9b87d37a5656 -m default.xml
-repo sync
-repo manifest -r -o ../aosp-resolved-manifest.xml
-```
-
-Run this in a new Linux x86_64 workspace with sufficient checkout/build storage.
-Use that checkout's JDK, Clang, Make and Soong tooling. Permit local loopback
-sockets for build tools. Supply the pinned ncurses-5/tinfo-5 compatibility
-libraries to legacy RenderScript tools through the actual Ninja environment.
-Use the generated relative Soong M4 path resolving to the pinned prebuilt.
-
-The manifest is a source baseline, not the full Aura customization. This public
-tree supplies policy, Controls source and the integration contracts below; it
-does not yet contain a complete ordered Aura framework patch series. The
-Android-17 setup script must not be used to synthesize an Aura build. Maintain
-the reviewed Android-14 patch series and resolved manifest with the build.
-
-After integrating the product, select its ARM64 userdebug lunch target and
-build `systemimage`; build `InkControls` for an app-only change. Compile the
-portable color translation units with the target flags as well as the Android
-bridge. Record raw image size/hash and hashes of changed system binaries beside
-the output. Keep source, resolved manifests and output identities distinct.
+This public assembly has not been built or device-tested. The Android-17 setup
+script targets Neo 2; use the Aura-specific recipe for this integration.
 
 ## Owner-local runtime inputs
 

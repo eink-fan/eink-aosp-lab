@@ -124,7 +124,7 @@ class LowerEngineDirectBackend final : public Engine {
   // Temporary M4 guest controls. Shell may adjust debug.neo2.eink.* without
   // changing stock: enabled defaults true only in a debuggable build when the
   // property is absent; an explicit false immediately blocks new lower-engine
-  // calls; max_updates is finite and clamped to 1--24; continuous defaults true but
+  // calls; max_updates is finite and clamped to 1--24; continuous follows the profile default and
   // may be disabled to restore that finite budget; min_interval_ms defaults
   // to 100 and is clamped to 50--5000 for deliberate sub-second DSU
   // experiments.

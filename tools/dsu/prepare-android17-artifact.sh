@@ -40,7 +40,7 @@ done
 }
 [[ -f "$profile" ]] || { printf 'error: DSU profile is absent: %s\n' "$profile" >&2; exit 1; }
 profile_value() { awk -F= -v key="$1" '$1 == key { print substr($0, index($0, "=") + 1); exit }' "$profile"; }
-[[ $(profile_value schema) == neo2-android17-dsu-v1 ]] || { printf '%s\n' 'error: unsupported DSU profile' >&2; exit 1; }
+[[ $(profile_value schema) == neo2-android17-dsu-v1 || $(profile_value schema) == eink-dsu-v1 ]] || { printf '%s\n' 'error: unsupported DSU profile' >&2; exit 1; }
 aosp_subdirectory=$(profile_value aosp_subdirectory)
 system_image_relative=$(profile_value system_image_relative)
 artifact_name=$(profile_value artifact_name)

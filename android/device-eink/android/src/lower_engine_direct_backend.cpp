@@ -54,9 +54,8 @@ constexpr int kObservedNormalDifferentialRecord = ToEngineMode(RefreshMode::kGlr
 // and the observed normal `(3, 0, 0)` route reaches that same return. It is
 // not a POSIX-style error.
 constexpr int kObservedUpdateAcceptedResult = -3;
-// Finite operation spans normal boot into the launcher. Continuous operation
-// is separately and explicitly armed by a volatile guest debug property; its
-// cadence floor prevents a high-rate panel loop in either mode.
+// Finite diagnostic operation is opt-in for established profiles.
+// The cadence floor applies independently of the lifetime submission budget.
 constexpr std::uint64_t kM4DefaultSubmissionLimit = 12;
 constexpr std::uint64_t kM4HardSubmissionLimit = 24;
 constexpr int kM4DefaultMinimumIntervalMs = 50;
@@ -331,22 +330,15 @@ std::uint64_t LowerEngineDirectBackend::ActiveSubmissionLimit() {
 }
 
 bool LowerEngineDirectBackend::ContinuousModeEnabled() {
-  // Continuous output requires a separately authorized supervised session.
-  // Default to the finite public bring-up budget.
-  return ::android::base::GetBoolProperty(kM4ContinuousProperty, false);
+  // Established profiles keep presenting without a lifetime submission cap.
+  // An explicit 0 selects the finite diagnostic budget.
+  return ::android::base::GetBoolProperty(kM4ContinuousProperty, kDeviceProfile.display_enabled_by_default);
 }
 
 bool LowerEngineDirectBackend::PresentationEnabled() {
-  // R2 starts capture-only. An operator must deliberately arm the existing
-  // volatile control after clean guest ADB evidence before this private engine
-  // can initialize or accept a frame. R4 keeps a rootable diagnostic guest
-  // convenient to inspect: only when the property is absent, a debuggable
-  // build defaults armed. An explicit 0 remains a hard disarm, and a
-  // production user build retains the former disarmed default.
-  if (::android::base::GetProperty(kM4EnabledProperty, "").empty()) {
-    return ::android::base::GetBoolProperty("ro.debuggable", false);
-  }
-  return ::android::base::GetBoolProperty(kM4EnabledProperty, false);
+  // Profile defaults apply to user, userdebug and eng alike. Explicit 0
+  // remains available for capture-only diagnosis.
+  return ::android::base::GetBoolProperty(kM4EnabledProperty, kDeviceProfile.display_enabled_by_default);
 }
 
 std::chrono::milliseconds LowerEngineDirectBackend::MinimumSubmissionInterval() {
@@ -572,9 +564,8 @@ bool LowerEngineDirectBackend::Submit(const Frame& frame) {
     return false;
   }
 
-  // The retained engine remains the stock repeated-frame owner. By default
-  // M4 normally remains continuous while the demand gate is being developed.
-  // An operator may set debug.neo2.eink.continuous=0 in this temporary guest
+  // The retained engine remains the repeated-frame owner. Established
+  // profiles default to continuous output. Set debug.neo2.eink.continuous=0
   // to restore the finite 24-submission diagnostic budget immediately. The
   // 50-ms--5-second output-rate clamp remains
   // in force in both modes. It is a queue-attempt control, not a claimed

@@ -9,6 +9,10 @@ and compatible updates. Model names are configuration, not Android versions.
 
 ## Build and package
 
+The [Aura recipe](../../profiles/aura-c/BUILD.md) stages this module and its
+matching framework services, including provider rebind after package replacement.
+That assembled integration has not been built or device-tested here.
+
 Place this directory in the target AOSP source tree, select the matching
 product, then build:
 

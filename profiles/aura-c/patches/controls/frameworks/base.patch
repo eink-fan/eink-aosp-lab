@@ -1,0 +1,27 @@
+diff --git a/services/core/java/com/android/server/neo2/Neo2SleepImageManagerService.java b/services/core/java/com/android/server/neo2/Neo2SleepImageManagerService.java
+index f98d9cd1d2f663587e3e591e2a777ac198438b82..9d42f046ae1a1b04b3c2599c0e687b75eb1ae1a4 100644
+--- a/services/core/java/com/android/server/neo2/Neo2SleepImageManagerService.java
++++ b/services/core/java/com/android/server/neo2/Neo2SleepImageManagerService.java
+@@ -225,6 +225,22 @@ public final class Neo2SleepImageManagerService extends SystemService {
+                 }
+             });
+         }
++        @Override public void onBindingDied(ComponentName name) {
++            // Package replacement permanently invalidates this binding. AUTO_CREATE
++            // reconnects ordinary process deaths, but a dead binding needs a new bind.
++            mHandler.post(() -> {
++                synchronized (mStateLock) {
++                    mProvider = null;
++                    mProviderUid = -1;
++                    ++mRequestGeneration;
++                    mRequestInFlight = false;
++                    mRequestsThisConnection = 0;
++                    finishRefreshLocked(RESULT_UNAVAILABLE);
++                    getContext().unbindService(mProviderConnection);
++                    if (mUserAvailable) bindProviderAfterUserAvailable();
++                }
++            });
++        }
+         @Override public void onServiceDisconnected(ComponentName name) {
+             mHandler.post(() -> {
+                 synchronized (mStateLock) {

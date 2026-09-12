@@ -53,11 +53,12 @@ stages only the owner-extracted payload. The build script produces
 - Keep `payload/`, `workspaces/`, `artifacts/`, and `evidence/` outside Git.
 - A successful build is not proof of boot, panel output, physical completion,
   front-light behavior, recovery, or daily-driver suitability.
-- The confirmed full-binding direct presenter is on by default in every build
-  variant. Continuous submission remains off and bounded; do not enable it
-  without a separately authorized, directly supervised experiment. An
-  operator may set the documented volatile property to `0` for a capture-only
-  diagnostic boot.
+- Neo 2 and Aura C profiles enable the direct presenter and continuous
+  submission by default in every build variant, without a lifetime update cap.
+  Preserve pacing, demand gating, ownership and runtime validation. New model
+  profiles default to capture-only and finite submission until qualified.
+  Volatile `debug.neo2.eink.enabled=0` selects capture-only diagnostics;
+  `debug.neo2.eink.continuous=0` selects the finite diagnostic budget.
 - The extractor derives an editable calibration from read-only stock resources
   on the owner's device. The base profile grants no front-light write access;
   `--with-frontlight-controls` adds only the two model-typed primary-node

@@ -9,7 +9,7 @@ an ABI guarantee.
 | Framework target | Model/runtime example | Public coverage |
 | --- | --- | --- |
 | Android 14 / API 34 | Neo 2 monochrome runtime | Profile, authored capture/engine bridge and historical patches |
-| Android 14 / API 34 | Aura C color runtime | Model-level contract and portable color policies; no self-contained build recipe |
+| Android 14 / API 34 | Aura C color runtime | Pinned manifest, ordered patches, native graft, Controls and fresh-workspace tooling; public assembly not built/tested |
 | Android 17 / API 37 | Neo 2 Android-14 runtime | Pinned local extraction, setup and systemimage build recipe |
 
 These rows record available integration work, not a compatibility matrix for
@@ -27,6 +27,9 @@ helper is not an Android-14 builder.
 
 An Android-14 port must provide its own immutable manifest, ordered patch set,
 payload identity checks, and build contract before claiming reproducibility.
+The [Aura recipe](../profiles/aura-c/BUILD.md) supplies these source inputs and
+tools; its new public assembly still needs separately authorized build/device
+qualification. It does not depend on a private build server or checkout.
 Compile SurfaceFlinger capture and synchronization against that target's
 RenderEngine, GraphicBuffer, fence, and Binder interfaces. Rebase framework
 services, Settings and SystemUI at their actual Android-14 owners; copying

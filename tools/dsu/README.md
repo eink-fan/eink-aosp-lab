@@ -78,3 +78,12 @@ tools/dsu/capture-boot-evidence.sh \
 This records guest identity, boot completion, and SurfaceFlinger/Neo2Eink
 diagnostics. The evidence directory may contain device data and must remain
 outside Git; the helper rejects any evidence directory inside this repository.
+
+## Aura Android-14 packaging and device actions
+
+The shared artifact packager accepts `--profile profiles/aura-c/dsu-profile.env`
+with the device-neutral `eink-dsu-v1` schema; legacy Neo profile schemas remain
+supported. Follow [Aura BUILD.md](../../profiles/aura-c/BUILD.md) for exact
+packaging arguments. Aura uses the separate staged-file, host-version-aware
+[device helper](../device/README.md), with staging, installation and one-boot
+enablement as distinct actions. Packaging does not authorize device operations.

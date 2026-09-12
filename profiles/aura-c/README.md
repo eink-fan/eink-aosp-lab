@@ -1,14 +1,15 @@
 # Aura C model reference
 
-Start with [Android-14 integration](ANDROID14.md), then follow
+Start with [the build recipe](BUILD.md) and [Android-14 integration](ANDROID14.md), then follow
 [device setup and installation](DEVICE_SETUP.md). The current
 [Ink Controls source](../../android/ink-controls/README.md) is included separately
 from the older app bound to the Neo 2 recipe.
 
-This is a model/runtime contract extracted from authored integration work. It
-contains no vendor implementation, lookup tables, calibration, operational
-history, or device-instance records. It is not a standalone build or install
-profile. The public Neo 2 extractor and setup scripts must not be used for it.
+This profile supplies a pinned manifest, ordered patches, native integration,
+Controls and owner-local build/device tooling. It contains no vendor binaries,
+lookup tables, calibration values or device-instance records. The newly
+assembled public recipe has not been built or device-tested. Use its Aura
+tools rather than the Neo 2 extractor/setup scripts.
 
 ## Geometry and runtime
 
@@ -50,8 +51,7 @@ geometry and runtime validation still apply when displaying monochrome content.
 Front-light channel topology and calibration are another independent hardware
 contract; Neo 2's two-node permission bundle does not apply here.
 
-To turn this reference into a reproducible public build profile, contribute an
-immutable source manifest, a reviewed target-specific patch series, owner-only
-extraction and identity validation, and bounded backend tests. Keep vendor
-bytes outside Git under [BYO_VENDOR](../../docs/BYO_VENDOR.md). No device
-qualification is claimed by this reference or the portable host tests.
+Keep vendor bytes outside Git under [BYO_VENDOR](../../docs/BYO_VENDOR.md).
+Follow [BUILD.md](BUILD.md) for the supplied inputs and source assembly, then
+qualify the exact locally built artifact. Source availability and earlier
+component tests do not constitute qualification of this public assembly.

@@ -1,5 +1,9 @@
 # Neo 2 Android-17 profile
 
+For stock preparation, preserved slot-B fallback and system-A promotion, see
+[device setup](DEVICE_SETUP.md). See [feature coverage](../../docs/FEATURES.md)
+for the source wired into this pinned recipe.
+
 This profile records the Neo 2 Android-17/API-37 binding boundary. It is a
 separate framework integration from Android 14, even though it uses the same
 locally supplied e-ink runtime family and observed mode envelope. Do not copy
@@ -91,9 +95,9 @@ daily-driver suitability.
   adb shell setprop debug.neo2.eink.enabled 0
   ```
 
-  This volatile property is cleared by reboot. Continuous submission remains
-  off by default with a finite diagnostic budget and must stay off except
-  during a separately approved, directly supervised experiment.
+  This volatile property is cleared by reboot. Continuous submission is enabled
+  by default without a lifetime update cap. Set `debug.neo2.eink.continuous=0`
+  to select the finite diagnostic budget; pacing remains active in both modes.
 - The base profile grants SurfaceFlinger no front-light write access. The
   optional public control-surface proposal adds only exact cool/warm primary
   node access and requires a validated owner-local calibration. It is an

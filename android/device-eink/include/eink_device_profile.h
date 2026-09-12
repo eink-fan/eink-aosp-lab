@@ -35,6 +35,8 @@ struct EinkDeviceProfile {
   std::string_view waveform_block_device;
   std::string_view token_block_device;
   std::string_view frontlight_calibration_path;
+  // New models remain capture-only and finite until explicitly qualified.
+  bool display_enabled_by_default = false;
 };
 
 inline constexpr EinkDeviceProfile kNeo2DeviceProfile{
@@ -53,6 +55,7 @@ inline constexpr EinkDeviceProfile kNeo2DeviceProfile{
         .waveform_block_device = "/dev/block/mmcblk0p1",
         .token_block_device = "/dev/block/mmcblk0p2",
         .frontlight_calibration_path = "/system/etc/neo2_frontlight_calibration.conf",
+        .display_enabled_by_default = true,
 };
 
 inline constexpr EinkDeviceProfile kOceanDeviceProfile{
@@ -113,6 +116,7 @@ inline constexpr EinkDeviceProfile kAuraCDeviceProfile{
         .waveform_block_device = "/dev/block/by-name/waveform",
         .token_block_device = "/dev/block/by-name/token",
         .frontlight_calibration_path = "/system/etc/aura_c_frontlight_calibration.conf",
+        .display_enabled_by_default = true,
 };
 
 [[nodiscard]] constexpr const EinkDeviceProfile* FindEinkDeviceProfile(

@@ -25,8 +25,8 @@ It does not claim that one device's e-ink engine is compatible with another.
 - Exact RGB demand tracking, opt-in engine-marker guard policy, and a
   source-built transition fixture. The [color procedure](docs/COLOR_LEARNINGS.md)
   covers mapping lifetime, protected intermediate submission and optical tests.
-- An Aura C model/runtime reference and an explicit Android framework-target
-  guide, separate from the pinned Neo 2 build recipe.
+- An Aura C Android-14 recipe with pinned sources, ordered patches, native
+  display integration and owner-operated device tools.
 - Porting, safety, and public-release guidance.
 
 ## What is intentionally absent
@@ -38,12 +38,17 @@ It does not claim that one device's e-ink engine is compatible with another.
 
 ## Working instructions
 
+- [Feature coverage](docs/FEATURES.md): capabilities and integration status.
+- [Aura build recipe](profiles/aura-c/BUILD.md): payload, checkout and packaging.
+- [Neo 2 stock setup and system-A promotion](profiles/neo2-android17/DEVICE_SETUP.md).
+- [Device tools](tools/device/README.md): separate recovery, DSU and promotion steps.
+
 - [Aura C Android-14 integration](profiles/aura-c/ANDROID14.md): source target,
   runtime inputs, display, framework services and front-light configuration.
 - [Aura C device setup](profiles/aura-c/DEVICE_SETUP.md): access, recovery,
   temporary DSU, permanent installation and verification.
 - [Ink Controls](android/ink-controls/README.md): current app source, build and
-  service contract. Select it instead of the older Neo2Controls module.
+  service contract. The Aura recipe stages it; Neo 2 retains its pinned module.
 - [Color pipeline](docs/COLOR_LEARNINGS.md): implementation and test procedure.
 
 ## Quick host check
@@ -60,7 +65,8 @@ The commands below build the Neo 2 Android-17 profile. See
 [Android integration targets](docs/ANDROID_INTEGRATION.md) for Android 14 and
 [color presentation](docs/COLOR.md) for reusable color policy. The
 [Aura C reference](profiles/aura-c/README.md) records its distinct backend
-contract; it does not yet supply an equivalent public build recipe.
+contract. Its [build recipe](profiles/aura-c/BUILD.md) includes the source
+assembly and tooling; this public assembly has not been built or device-tested.
 
 - Linux x86_64 workstation with network access, Android `repo`, JDK/toolchain,
   and enough disk for a full AOSP checkout plus build output.
@@ -86,8 +92,8 @@ tools/build-neo2-android17.sh --workspace /path/to/new/neo2-aosp17
 ```
 
 This produces a build artifact only. The confirmed full-binding e-ink
-presenter is enabled by default; continuous submission remains off and bounded
-by a finite diagnostic budget. The base public profile cannot write front-light
+presenter and continuous submission are enabled by default on Neo 2 and Aura C,
+without a lifetime update cap. Finite budgets remain available for diagnostics. The base public profile cannot write front-light
 sysfs nodes unless the optional control-surface bundle is selected.
 That bundle grants access only to the two model-typed primary nodes and consumes
 the owner-local calibration; it remains experimental and does not provide
