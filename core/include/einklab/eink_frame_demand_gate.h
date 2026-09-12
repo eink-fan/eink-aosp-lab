@@ -5,11 +5,12 @@
 
 namespace einklab {
 
-// A panel update is useful only when the panel-visible grayscale pixels have
-// changed. This small, portable gate deliberately works after conversion: a
-// UI change that has the same e-ink grayscale result does not need a device-update
-// submission. It does not claim that a changed signature is physical panel
-// completion, nor does it select a refresh mode.
+// This gate compares signatures in the selected presentation domain. A gray
+// backend may sign converted gray; a color backend must include RGB changes,
+// even at equal luma. A signature may be a hash or an exact tracker's generation.
+// Treatment changes require invalidation even if source pixels are unchanged.
+// This is capture demand, not accepted output or physical panel completion;
+// explicit refresh requests must bypass ordinary unchanged-content suppression.
 struct FrameSignature {
   std::uint64_t hash = 0;
   std::size_t bytes = 0;

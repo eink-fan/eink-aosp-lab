@@ -1,7 +1,9 @@
 # Bring your own vendor inputs
 
-This repository neither provides proprietary device software nor downloads
-firmware, bypasses access controls, or supports flashing stock partitions.
+This repository provides authored source and owner-operated instructions.
+It does not provide or download proprietary device software. Recovery and
+installation procedures consume the owner's locally verified images; they
+do not grant redistribution rights to those inputs.
 
 If you own a compatible device and are permitted by the applicable software
 terms to inspect its local software, use a matching OEM-provided stock image

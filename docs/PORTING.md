@@ -3,6 +3,9 @@
 1. Start with a stock-recovery plan and read-only inspection. Do not assume an
    Android 14 userspace implies compatible display hardware.
 2. Build and run the public host suite before writing a device backend.
+   Select the [framework target](ANDROID_INTEGRATION.md), model/runtime and
+   [color policies](COLOR.md) independently. Neither Android version nor panel
+   color capability establishes runtime compatibility.
 3. In a private workspace, write a backend that implements only the public
    `Engine` contract and owns its device-specific dependencies locally.
 4. Validate buffer ownership, geometry, and failure behavior before attempting

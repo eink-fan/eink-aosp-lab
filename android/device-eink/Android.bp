@@ -1,0 +1,103 @@
+// Android-specific SurfaceFlinger modules live below this portable core. They
+// must be declared explicitly: Blueprint otherwise does not discover this
+// nested Android.bp when the adapter is copied into the AOSP source tree.
+subdirs = ["android"]
+
+soong_config_string_variable {
+    name: "device_variant",
+    values: [
+        "neo2",
+        "ocean",
+        "musnap_x",
+        "aura_c",
+    ],
+}
+
+soong_config_module_type {
+    name: "neo2_eink_device_cc_defaults",
+    module_type: "cc_defaults",
+    config_namespace: "neo2_eink",
+    variables: ["device_variant"],
+    properties: ["cflags"],
+}
+
+neo2_eink_device_cc_defaults {
+    name: "neo2_eink_selected_device_defaults",
+    soong_config_variables: {
+        device_variant: {
+            neo2: {
+                cflags: ["-DNEO2_EINK_DEVICE_VARIANT_NEO2=1"],
+            },
+            ocean: {
+                cflags: ["-DNEO2_EINK_DEVICE_VARIANT_OCEAN=1"],
+            },
+            musnap_x: {
+                cflags: ["-DNEO2_EINK_DEVICE_VARIANT_MUSNAP_X=1"],
+            },
+            aura_c: {
+                cflags: ["-DNEO2_EINK_DEVICE_VARIANT_AURA_C=1"],
+            },
+            conditions_default: {
+                cflags: ["-DNEO2_EINK_DEVICE_VARIANT_NEO2=1"],
+            },
+        },
+    },
+}
+
+// Portable core for import into a same-version Android 14 source tree.
+cc_library_static {
+    name: "libneo2_eink_presentation_core",
+    defaults: ["neo2_eink_selected_device_defaults"],
+    srcs: [
+        "src/eink_capture_admission_policy.cpp",
+        "src/eink_capture_pressure_accounting.cpp",
+        "src/eink_debug_property.cpp",
+        "src/eink_frame_demand_gate.cpp",
+        "src/eink_full_pool_resample_policy.cpp",
+        "src/eink_frontlight_audit.cpp",
+        "src/eink_frontlight_policy.cpp",
+        "src/eink_manual_frontlight_control.cpp",
+        "src/eink_color_quality.cpp",
+        "src/eink_gray_preference.cpp",
+        "src/eink_grayscale_delta.cpp",
+        "src/eink_grayscale_fidelity.cpp",
+        "src/eink_idle_gate.cpp",
+        "src/eink_lower_engine_layout.cpp",
+        "src/eink_presentation_adapter.cpp",
+        "src/eink_capture_only_engine.cpp",
+        "src/eink_one_shot_engine.cpp",
+        "src/eink_policy.cpp",
+        "src/eink_presentation_arm_gate.cpp",
+        "src/eink_sleep_image_background.cpp",
+        "src/eink_sleep_image_latch.cpp",
+        "src/eink_sleep_image_overlay.cpp",
+        "src/eink_scalar_strncpy.cpp",
+        "src/eink_snapshot_pool.cpp",
+        "src/eink_submission_observer.cpp",
+        "src/neo2_panel_geometry_gate.cpp",
+        "src/software_grayscale.cpp",
+    ],
+    export_include_dirs: ["include"],
+    cpp_std: "c++20",
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ],
+}
+
+// The first Android graft is metadata-only and needs only this non-throwing
+// panel-orientation gate. Keep it separate from the future scheduler and
+// snapshot-pool core, which deliberately has a broader host-side contract.
+cc_library_static {
+    name: "libneo2_eink_geometry_gate",
+    defaults: ["neo2_eink_selected_device_defaults"],
+    srcs: ["src/neo2_panel_geometry_gate.cpp"],
+    export_include_dirs: ["include"],
+    cpp_std: "c++20",
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ],
+}

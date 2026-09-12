@@ -1,0 +1,73 @@
+diff --git a/private/genfs_contexts b/private/genfs_contexts
+--- a/private/genfs_contexts
++++ b/private/genfs_contexts
+@@ -128,5 +128,13 @@ genfscon sysfs /devices/platform/soc/soc:mtk_ireader/pix_fmt u:object_r:neo2_ein
+ genfscon sysfs /devices/platform/soc/soc:mtk_ireader/vcomvalue u:object_r:neo2_eink_vcom_sysfs:s0
+ genfscon sysfs /devices/platform/soc/soc:mtk_ireader/einktemperinfo u:object_r:neo2_eink_temper_info_sysfs:s0
++# Aura C exports the same narrowly scoped controls through its MT6771 paths.
++genfscon sysfs /devices/platform/mtk_ireader/pix_fmt u:object_r:neo2_eink_pix_fmt_sysfs:s0
++genfscon sysfs /eink/app/vcomvalue u:object_r:neo2_eink_vcom_sysfs:s0
++genfscon sysfs /devices/platform/mtk_ireader/einktemperinfo u:object_r:neo2_eink_temper_info_sysfs:s0
++# Its ODM battery node is otherwise left generic and unreadable by health HAL.
++genfscon sysfs /devices/platform/odm/odm:battery/power_supply/battery u:object_r:sysfs_batteryinfo:s0
+ genfscon sysfs /devices/platform/11009000.i2c/i2c-2/2-0036/b_brightness u:object_r:neo2_frontlight_cool_sysfs:s0
+ genfscon sysfs /devices/platform/11009000.i2c/i2c-2/2-0036/a_brightness u:object_r:neo2_frontlight_warm_sysfs:s0
++genfscon sysfs /devices/platform/11009000.i2c/i2c-2/2-0038/b_brightness u:object_r:neo2_frontlight_cool_sysfs:s0
++genfscon sysfs /devices/platform/11009000.i2c/i2c-2/2-0038/a_brightness u:object_r:neo2_frontlight_warm_sysfs:s0
+ genfscon sysfs /class/net                         u:object_r:sysfs_net:s0
+diff --git a/private/neo2_sleep_image.te b/private/neo2_sleep_image.te
+new file mode 100644
+--- /dev/null
++++ b/private/neo2_sleep_image.te
+@@ -0,0 +1,15 @@
++# Aura C catalog bytes flow only between the platform-signed Controls provider,
++# system_server's profile-bound validator, and SurfaceFlinger's private endpoint.
++type neo2_sleep_image_service, service_manager_type;
++type neo2_sleep_image_manager_service, service_manager_type;
++
++add_service(surfaceflinger, neo2_sleep_image_service)
++allow system_server neo2_sleep_image_service:service_manager find;
++
++add_service(system_server, neo2_sleep_image_manager_service)
++allow platform_app neo2_sleep_image_manager_service:service_manager find;
++
++# The signature-protected provider and manager exchange only bounded catalog
++# descriptors and refresh results over Binder.
++binder_call(system_server, platform_app)
++binder_call(platform_app, system_server)
+diff --git a/private/neo2_frontlight.te b/private/neo2_frontlight.te
+new file mode 100644
+--- /dev/null
++++ b/private/neo2_frontlight.te
+@@ -0,0 +1,18 @@
++# SurfaceFlinger owns the only native Aura C front-light writer. The
++# platform-signed Controls app may discover and call it through its signature
++# permission; no ordinary application is admitted to this Binder boundary.
++type neo2_frontlight_control_service, service_manager_type;
++add_service(surfaceflinger, neo2_frontlight_control_service)
++allow platform_app neo2_frontlight_control_service:service_manager find;
++binder_call(platform_app, surfaceflinger)
++binder_call(surfaceflinger, platform_app)
++
++# Android 17 ownership model: trusted UI -> system_server -> native writer.
++type neo2_frontlight_manager_service, service_manager_type;
++add_service(system_server, neo2_frontlight_manager_service)
++allow platform_app neo2_frontlight_manager_service:service_manager find;
++allow system_app neo2_frontlight_manager_service:service_manager find;
++allow system_server neo2_frontlight_control_service:service_manager find;
++binder_call(system_server, surfaceflinger)
++binder_call(system_app, system_server)
++binder_call(platform_app, system_server)
+diff --git a/private/service_contexts b/private/service_contexts
+--- a/private/service_contexts
++++ b/private/service_contexts
+@@ -301,5 +301,9 @@ mount                                     u:object_r:mount_service:s0
+ music_recognition                         u:object_r:music_recognition_service:s0
+ nearby                                    u:object_r:nearby_service:s0
++neo2_frontlight_controls                   u:object_r:neo2_frontlight_control_service:s0
++neo2_frontlight                            u:object_r:neo2_frontlight_manager_service:s0
++neo2_sleep_image                          u:object_r:neo2_sleep_image_service:s0
++neo2_sleep_image_manager                  u:object_r:neo2_sleep_image_manager_service:s0
+ netd                                      u:object_r:netd_service:s0
+ netpolicy                                 u:object_r:netpolicy_service:s0
+ netstats                                  u:object_r:netstats_service:s0

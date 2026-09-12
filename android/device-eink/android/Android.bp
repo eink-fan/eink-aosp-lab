@@ -1,0 +1,156 @@
+subdirs = [
+    "frontlight-app",
+    "vendor-runtime/aura_c",
+]
+
+// Soong config module types are visible only inside their Blueprint package.
+// Keep the Neo payload selectors in the same generated Android.bp as the Neo
+// prebuilt declarations.
+soong_config_string_variable {
+    name: "device_variant",
+    values: [
+        "neo2",
+        "ocean",
+        "musnap_x",
+        "aura_c",
+    ],
+}
+
+soong_config_module_type {
+    name: "neo2_eink_neo_variant_cc_prebuilt_library_shared",
+    module_type: "cc_prebuilt_library_shared",
+    config_namespace: "neo2_eink",
+    variables: ["device_variant"],
+    properties: ["enabled"],
+}
+
+soong_config_module_type {
+    name: "neo2_eink_neo_variant_cc_library_shared",
+    module_type: "cc_library_shared",
+    config_namespace: "neo2_eink",
+    variables: ["device_variant"],
+    properties: ["enabled"],
+}
+
+soong_config_module_type {
+    name: "neo2_eink_neo_variant_prebuilt_etc",
+    module_type: "prebuilt_etc",
+    config_namespace: "neo2_eink",
+    variables: ["device_variant"],
+    properties: ["enabled"],
+}
+
+// Import this into the Android 14 SurfaceFlinger build context. Match the
+// owning libcompositionengine target's defaults so its RenderEngine/Skia
+// dependency closure is complete.
+cc_library_static {
+    name: "libneo2_eink_render_surface_capture",
+    defaults: [
+        "libcompositionengine_defaults",
+        "neo2_eink_selected_device_defaults",
+    ],
+    srcs: [
+        "src/android_eink_pipeline.cpp",
+        "src/android_grayscale_converter.cpp",
+        "src/capture_metadata_sink.cpp",
+        "src/eink_sleep_image_catalog.cpp",
+        "src/gpu_snapshot_pool.cpp",
+        "src/render_surface_capture.cpp",
+        "src/render_surface_capture_session.cpp",
+    ],
+    export_include_dirs: ["include"],
+    // CompositionEngine links only this capture archive. Carry the complete
+    // portable core through the final archive link: M1 needs the geometry
+    // gate, while M3 additionally needs CaptureOnlyEngine, the serial
+    // scheduler, policy, and owned grayscale storage. An ordinary static_libs
+    // edge could export headers without retaining the required objects.
+    whole_static_libs: [
+        "libneo2_eink_presentation_core",
+    ],
+    // Re-export portable headers to CompositionEngine, which includes
+    // RenderSurfaceCaptureSession directly.
+    export_static_lib_headers: [
+        "libneo2_eink_presentation_core",
+    ],
+    // RenderSurfaceCaptureSession is compiled into this archive, before
+    // libcompositionengine whole-links it. The M4 define must therefore be
+    // selected here as well as on the owning CompositionEngine target; a
+    // cflag on the final static-library consumer cannot retroactively change
+    // this archive's preprocessor branch.
+    target: {
+        android_arm64: {
+            cflags: ["-DNEO2_EINK_M4_LOWER_ENGINE_OUTPUT=1"],
+        },
+    },
+    cpp_std: "c++20",
+}
+
+// Deliberately unreferenced by libneo2_eink_render_surface_capture. This is a
+// compile-only same-build vendor-wrapper boundary: an M4 graft must explicitly
+// select and link it against the exact RM06L Android-14 vendor library family.
+// Do not add this to M1–M3's `whole_static_libs`.
+cc_library_static {
+    name: "libneo2_eink_vendor_sync_backend",
+    defaults: [
+        "libcompositionengine_defaults",
+        "neo2_eink_selected_device_defaults",
+    ],
+    srcs: [
+        "src/android_vendor_eink_pipeline.cpp",
+        "src/vendor_sync_controller_backend.cpp",
+    ],
+    static_libs: [
+        "libneo2_eink_presentation_core",
+    ],
+    export_include_dirs: ["include"],
+    export_static_lib_headers: [
+        "libneo2_eink_presentation_core",
+    ],
+    shared_libs: [
+        "libgui",
+        "liblog",
+        "libui",
+        "libutils",
+    ],
+    // `hwc_epdc_llist` is the recovered 64-bit vendor ABI. This backend can
+    // never be part of the 32-bit secondary product build.
+    compile_multilib: "64",
+    cpp_std: "c++20",
+}
+
+// Compile-checked direct lower-engine one-shot executor. It is intentionally
+// unreferenced by the capture archive: M1-M3 cannot construct it, call its
+// output-sensitive initializer, or submit a frame. A future reviewed output
+// graft must select this exact module explicitly.
+cc_library_static {
+    name: "libneo2_eink_lower_engine_backend",
+    defaults: [
+        "libcompositionengine_defaults",
+        "neo2_eink_selected_device_defaults",
+    ],
+    srcs: [
+        "src/frontlight_direct_backend.cpp",
+        "src/lower_engine_direct_backend.cpp",
+        "src/manual_frontlight_binder_service.cpp",
+        "src/ocean_waveform_compatibility.cpp",
+        "src/pogo_button_long_press_configurator.cpp",
+        "src/sleep_image_binder_service.cpp",
+    ],
+    static_libs: [
+        "libneo2_eink_presentation_core",
+    ],
+    shared_libs: [
+        "libbase",
+        "libbinder",
+        "libdl",
+        "liblog",
+        "libui",
+        "libutils",
+    ],
+    export_include_dirs: ["include"],
+    export_static_lib_headers: [
+        "libneo2_eink_presentation_core",
+    ],
+    compile_multilib: "64",
+    cpp_std: "c++20",
+}

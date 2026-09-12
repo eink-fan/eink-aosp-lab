@@ -1,0 +1,136 @@
+// Generated into Neo2Eink/android/vendor-runtime/aura_c by the bounded Aura C
+// owner-device staging path. The payload bytes remain outside Git.
+
+soong_config_string_variable {
+    name: "device_variant",
+    values: [
+        "neo2",
+        "ocean",
+        "musnap_x",
+        "aura_c",
+    ],
+}
+
+soong_config_module_type {
+    name: "neo2_eink_aura_c_variant_cc_prebuilt_library_shared",
+    module_type: "cc_prebuilt_library_shared",
+    config_namespace: "neo2_eink",
+    variables: ["device_variant"],
+    properties: ["enabled"],
+}
+
+soong_config_module_type {
+    name: "neo2_eink_aura_c_variant_prebuilt_etc",
+    module_type: "prebuilt_etc",
+    config_namespace: "neo2_eink",
+    variables: ["device_variant"],
+    properties: ["enabled"],
+}
+
+cc_defaults {
+    name: "aura_c_stock_opaque_prebuilt_defaults",
+    check_elf_files: false,
+    strip: { none: true },
+    compile_multilib: "64",
+}
+
+neo2_eink_aura_c_variant_cc_prebuilt_library_shared {
+    name: "libaura_c_stock_idisplayengine",
+    defaults: ["aura_c_stock_opaque_prebuilt_defaults"],
+    stem: "libidisplayengine",
+    srcs: ["libidisplayengine.so"],
+    soong_config_variables: {
+        device_variant: {
+            aura_c: { enabled: true },
+            conditions_default: { enabled: false },
+        },
+    },
+}
+
+neo2_eink_aura_c_variant_cc_prebuilt_library_shared {
+    name: "libaura_c_stock_eink",
+    defaults: ["aura_c_stock_opaque_prebuilt_defaults"],
+    stem: "libeink",
+    srcs: ["libeink.so"],
+    soong_config_variables: {
+        device_variant: {
+            aura_c: { enabled: true },
+            conditions_default: { enabled: false },
+        },
+    },
+}
+
+neo2_eink_aura_c_variant_cc_prebuilt_library_shared {
+    name: "libaura_c_stock_eink_color",
+    defaults: ["aura_c_stock_opaque_prebuilt_defaults"],
+    stem: "libeink_color",
+    srcs: ["libeink_color.so"],
+    soong_config_variables: {
+        device_variant: {
+            aura_c: { enabled: true },
+            conditions_default: { enabled: false },
+        },
+    },
+}
+
+neo2_eink_aura_c_variant_cc_prebuilt_library_shared {
+    name: "libaura_c_stock_kaleido_render",
+    defaults: ["aura_c_stock_opaque_prebuilt_defaults"],
+    stem: "libEink_Kaleido_render_64",
+    srcs: ["libEink_Kaleido_render_64.so"],
+    soong_config_variables: {
+        device_variant: {
+            aura_c: { enabled: true },
+            conditions_default: { enabled: false },
+        },
+    },
+}
+
+neo2_eink_aura_c_variant_cc_prebuilt_library_shared {
+    name: "libaura_c_stock_einkutils",
+    defaults: ["aura_c_stock_opaque_prebuilt_defaults"],
+    stem: "libeinkutils",
+    srcs: ["libeinkutils.so"],
+    soong_config_variables: {
+        device_variant: {
+            aura_c: { enabled: true },
+            conditions_default: { enabled: false },
+        },
+    },
+}
+
+neo2_eink_aura_c_variant_prebuilt_etc {
+    name: "aura_c_stock_default_wbf",
+    src: "waveforms/default_wbf.bin",
+    filename: "default_wbf.bin",
+    soong_config_variables: {
+        device_variant: {
+            aura_c: { enabled: true },
+            conditions_default: { enabled: false },
+        },
+    },
+}
+
+neo2_eink_aura_c_variant_prebuilt_etc {
+    name: "aura_c_stock_regal_wbf",
+    src: "waveforms/regal.wbf",
+    filename: "regal.wbf",
+    soong_config_variables: {
+        device_variant: {
+            aura_c: { enabled: true },
+            conditions_default: { enabled: false },
+        },
+    },
+}
+
+neo2_eink_aura_c_variant_prebuilt_etc {
+    name: "aura_c_stock_frontlight_levels",
+    src: "frontlight/aura_c_frontlight_calibration.conf",
+    filename: "aura_c_frontlight_calibration.conf",
+    soong_config_variables: {
+        device_variant: {
+            aura_c: { enabled: true },
+            conditions_default: { enabled: false },
+        },
+    },
+}

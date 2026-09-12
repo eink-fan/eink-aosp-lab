@@ -1,0 +1,245 @@
+diff --git a/services/surfaceflinger/Android.bp b/services/surfaceflinger/Android.bp
+index 5683a9280f..70ee337ab0 100644
+--- a/services/surfaceflinger/Android.bp
++++ b/services/surfaceflinger/Android.bp
+@@ -254,6 +254,15 @@ cc_binary {
+         "libSurfaceFlingerProp",
+     ],
+ 
++    // The generic HWC marks normal guest UI as DEVICE composition, which
++    // bypasses the M4 RenderSurface client-target capture seam. This M4-only,
++    // arm64 flag selects SurfaceFlinger's existing client-composition path;
++    // the separate lower-engine backend still caps panel submissions.
++    target: {
++        android_arm64: {
++            cflags: ["-DNEO2_EINK_M4_FORCE_CLIENT_COMPOSITION=1"],
++        },
++    },
+     logtags: ["EventLog/EventLogTags.logtags"],
+ }
+ 
+diff --git a/services/surfaceflinger/CompositionEngine/Android.bp b/services/surfaceflinger/CompositionEngine/Android.bp
+index f3a0186e3e..10d6492610 100644
+--- a/services/surfaceflinger/CompositionEngine/Android.bp
++++ b/services/surfaceflinger/CompositionEngine/Android.bp
+@@ -84,6 +84,22 @@ cc_library {
+         "src/OutputLayerCompositionState.cpp",
+         "src/RenderSurface.cpp",
+     ],
++    whole_static_libs: [
++        "libneo2_eink_render_surface_capture",
++    ],
++    cflags: [
++        "-DNEO2_EINK_METADATA_ONLY=1",
++        "-DNEO2_EINK_M3_CAPTURE_ONLY=1",
++    ],
++    // libcompositionengine has a secondary 32-bit variant while the retained
++    // RM06L engine library is strictly 64-bit. Select the M4 executor and
++    // its code path only for the actual 64-bit SurfaceFlinger variant.
++    target: {
++        android_arm64: {
++            whole_static_libs: ["libneo2_eink_lower_engine_backend"],
++            cflags: ["-DNEO2_EINK_M4_LOWER_ENGINE_OUTPUT=1"],
++        },
++    },
+     local_include_dirs: ["include"],
+     export_include_dirs: ["include"],
+ }
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/RenderSurfaceCreationArgs.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/RenderSurfaceCreationArgs.h
+index 1d068c9f30..0000000000 100644
+--- a/services/surfaceflinger/CompositionEngine/include/compositionengine/RenderSurfaceCreationArgs.h
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/RenderSurfaceCreationArgs.h
+@@ -17,3 +17,4 @@
+ #pragma once
+
+ #include <cstdint>
++#include <functional>
+ #include <memory>
+
+@@ -45,3 +46,7 @@ struct RenderSurfaceCreationArgs {
+     // The maximum size of the renderengine::ExternalTexture cache
+     size_t maxTextureCacheSize = 0;
+
++    // B002s weak SurfaceFlinger-owned request path. It can schedule one
++    // later normal composition, but never grants a worker RenderEngine access.
++    std::function<bool()> neo2RequestComposite;
++
+ private:
+@@ -78,3 +83,9 @@ public:
+         return *this;
+     }
+
++    RenderSurfaceCreationArgsBuilder& setNeo2RequestComposite(
++            std::function<bool()> requestComposite) {
++        mArgs.neo2RequestComposite = std::move(requestComposite);
++        return *this;
++    }
++
+ private:
+diff --git a/services/surfaceflinger/DisplayDevice.cpp b/services/surfaceflinger/DisplayDevice.cpp
+index 08c43471c2..0000000000 100644
+--- a/services/surfaceflinger/DisplayDevice.cpp
++++ b/services/surfaceflinger/DisplayDevice.cpp
+@@ -81,3 +81,10 @@ DisplayDevice::DisplayDevice(DisplayDeviceCreationArgs& args)
+                     .setMaxTextureCacheSize(
+                             static_cast<size_t>(SurfaceFlinger::maxFrameBufferAcquiredBuffers))
++                    .setNeo2RequestComposite([
++                            flinger = wp<SurfaceFlinger>(mFlinger)]() -> bool {
++                        const auto strong = flinger.promote();
++                        if (strong == nullptr) return false;
++                        strong->scheduleComposite(SurfaceFlinger::FrameHint::kNone);
++                        return true;
++                    })
+                     .build());
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/RenderSurface.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/RenderSurface.h
+index 1c14a43920..f1851d1f16 100644
+--- a/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/RenderSurface.h
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/RenderSurface.h
+@@ -28,6 +28,10 @@
+ 
+ struct ANativeWindow;
+ 
++namespace neo2::eink::android {
++class RenderSurfaceCaptureSession;
++}
++
+ namespace android {
+ 
+ namespace compositionengine {
+@@ -86,6 +90,9 @@ private:
+     ui::Size mSize;
+     const size_t mMaxTextureCacheSize;
+     bool mProtected{false};
++#if defined(NEO2_EINK_METADATA_ONLY)
++    std::unique_ptr<::neo2::eink::android::RenderSurfaceCaptureSession> mNeo2CaptureSession;
++#endif
+ };
+ 
+ std::unique_ptr<compositionengine::RenderSurface> createRenderSurface(
+diff --git a/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp b/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
+index 0fe55db05c..1e3ace0f32 100644
+--- a/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
+@@ -33,6 +33,11 @@
+ #include <ui/GraphicBuffer.h>
+ #include <ui/Rect.h>
+ #include <utils/Trace.h>
++#include <cstdint>
++
++#if defined(NEO2_EINK_METADATA_ONLY)
++#include <neo2/eink/render_surface_capture_session.h>
++#endif
+ 
+ // TODO(b/129481165): remove the #pragma below and fix conversion issues
+ #pragma clang diagnostic push
+@@ -67,11 +72,25 @@ RenderSurface::RenderSurface(const CompositionEngine& compositionEngine, Display
+         mSize(args.displayWidth, args.displayHeight),
+         mMaxTextureCacheSize(args.maxTextureCacheSize) {
+     LOG_ALWAYS_FATAL_IF(!mNativeWindow);
++#if defined(NEO2_EINK_METADATA_ONLY)
++    if (!mDisplay.isVirtual()) {
++#if defined(NEO2_EINK_M3_CAPTURE_ONLY)
++        mNeo2CaptureSession = std::make_unique<::neo2::eink::android::RenderSurfaceCaptureSession>(
++                mCompositionEngine.getRenderEngine(), static_cast<std::uint32_t>(mSize.getWidth()),
++                static_cast<std::uint32_t>(mSize.getHeight()), args.neo2RequestComposite);
++#else
++        mNeo2CaptureSession =
++                std::make_unique<::neo2::eink::android::RenderSurfaceCaptureSession>();
++#endif
++    }
++#endif
+ }
+ 
+ RenderSurface::~RenderSurface() {
+-    ANativeWindow* const window = mNativeWindow.get();
+-    native_window_api_disconnect(window, NATIVE_WINDOW_API_EGL);
++#if defined(NEO2_EINK_METADATA_ONLY)
++    mNeo2CaptureSession.reset();
++#endif
++    native_window_api_disconnect(mNativeWindow.get(), NATIVE_WINDOW_API_EGL);
+ }
+ 
+ bool RenderSurface::isValid() const {
+@@ -87,6 +106,12 @@ void RenderSurface::initialize() {
+     ALOGE_IF(status != NO_ERROR, "Unable to set BQ format to RGBA888: %d", status);
+     status = native_window_set_usage(window, DEFAULT_USAGE);
+     ALOGE_IF(status != NO_ERROR, "Unable to set BQ usage bits for GPU rendering: %d", status);
++
++#if defined(NEO2_EINK_METADATA_ONLY)
++    if (mNeo2CaptureSession) {
++        mNeo2CaptureSession->StartMetadataOnly();
++    }
++#endif
+ }
+ 
+ const ui::Size& RenderSurface::getSize() const {
+@@ -220,6 +245,11 @@ void RenderSurface::queueBuffer(base::unique_fd readyFence) {
+         if (mTexture == nullptr) {
+             ALOGE("No buffer is ready for display [%s]", mDisplay.getName().c_str());
+         } else {
++#if defined(NEO2_EINK_METADATA_ONLY)
++            if (mNeo2CaptureSession) {
++                mNeo2CaptureSession->Capture(mTexture, readyFence);
++            }
++#endif
+             status_t result = mNativeWindow->queueBuffer(mNativeWindow.get(),
+                                                          mTexture->getBuffer()->getNativeBuffer(),
+                                                          dup(readyFence));
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index db205b8a95..7bde2ad4cb 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -37,6 +37,7 @@
+ #include <android-base/stringprintf.h>
+ #include <android-base/strings.h>
+ #include <android/configuration.h>
++#include <neo2/eink/render_surface_capture_session.h>
+ #include <android/gui/IDisplayEventConnection.h>
+ #include <android/gui/StaticDisplayInfo.h>
+ #include <android/hardware/configstore/1.0/ISurfaceFlingerConfigs.h>
+@@ -5625,6 +5626,7 @@ status_t SurfaceFlinger::doDump(int fd, const DumpArgs& args, bool asProto) {
+                 {"--hwclayers"s, dumper(&SurfaceFlinger::dumpHwcLayersMinidumpLocked)},
+                 {"--latency"s, argsDumper(&SurfaceFlinger::dumpStatsLocked)},
+                 {"--latency-clear"s, argsDumper(&SurfaceFlinger::clearStatsLocked)},
++                {"--neo2-eink"s, dumper(&SurfaceFlinger::dumpNeo2EinkDiagnostics)},
+                 {"--list"s, dumper(&SurfaceFlinger::listLayersLocked)},
+                 {"--planner"s, argsDumper(&SurfaceFlinger::dumpPlannerInfo)},
+                 {"--scheduler"s, dumper(&SurfaceFlinger::dumpScheduler)},
+@@ -5797,6 +5799,10 @@ void SurfaceFlinger::dumpCompositionDisplays(std::string& result) const {
+     }
+ }
+ 
++void SurfaceFlinger::dumpNeo2EinkDiagnostics(std::string& result) const {
++    result.append(::neo2::eink::android::GetNeo2EinkDiagnosticsSnapshot());
++}
++
+ void SurfaceFlinger::dumpDisplays(std::string& result) const {
+     utils::Dumper dumper{result};
+ 
+@@ -2631,7 +2631,14 @@ void SurfaceFlinger::composite(TimePoint frameTime, VsyncId vsyncId)
+         mDrawingState.colorMatrixChanged = false;
+     }
+ 
++    // The M4 DSU has no usable generic-HWC scanout, but its bounded retained
++    // e-ink presenter consumes RenderSurface client targets. Reuse the
++    // existing force-client-composition path only in that arm64 experiment;
++    // ordinary Android builds retain their normal HWC policy.
+     refreshArgs.devOptForceClientComposition = mDebugDisableHWC;
++#if defined(NEO2_EINK_M4_FORCE_CLIENT_COMPOSITION)
++    refreshArgs.devOptForceClientComposition = true;
++#endif
+ 
+     if (mDebugFlashDelay != 0) {
+         refreshArgs.devOptForceClientComposition = true;
+diff --git a/services/surfaceflinger/SurfaceFlinger.h b/services/surfaceflinger/SurfaceFlinger.h
+index d4700a4e25..6c37761c69 100644
+--- a/services/surfaceflinger/SurfaceFlinger.h
++++ b/services/surfaceflinger/SurfaceFlinger.h
+@@ -1078,6 +1078,7 @@ private:
+ 
+     void dumpCompositionDisplays(std::string& result) const REQUIRES(mStateLock);
+     void dumpDisplays(std::string& result) const REQUIRES(mStateLock);
++    void dumpNeo2EinkDiagnostics(std::string& result) const REQUIRES(mStateLock);
+     void dumpDisplayIdentificationData(std::string& result) const REQUIRES(mStateLock);
+     void dumpRawDisplayIdentificationData(const DumpArgs&, std::string& result) const;
+     void dumpWideColorInfo(std::string& result) const REQUIRES(mStateLock);

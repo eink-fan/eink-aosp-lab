@@ -20,6 +20,13 @@ It does not claim that one device's e-ink engine is compatible with another.
 - Android-14 and Android-17 Neo 2 profiles with observed panel geometry and
   refresh-mode hints, plus same-build integration guides.
 - A safe local-only payload staging helper.
+- Portable RGBA color treatment and accepted-target transition analysis,
+  independent of device and Android version.
+- Exact RGB demand tracking, opt-in engine-marker guard policy, and a
+  source-built transition fixture. The [color procedure](docs/COLOR_LEARNINGS.md)
+  covers mapping lifetime, protected intermediate submission and optical tests.
+- An Aura C model/runtime reference and an explicit Android framework-target
+  guide, separate from the pinned Neo 2 build recipe.
 - Porting, safety, and public-release guidance.
 
 ## What is intentionally absent
@@ -27,8 +34,17 @@ It does not claim that one device's e-ink engine is compatible with another.
 - Vendor libraries, waveform/calibration bytes, stock images, OTAs, partition
   dumps, device captures, and credentials.
 - Personal paths, host or account names, device-instance identifiers, build
-  receipts, and private operational history.
-- Flashing, unlocking, or stock-partition modification procedures.
+  receipts, and private operational records.
+
+## Working instructions
+
+- [Aura C Android-14 integration](profiles/aura-c/ANDROID14.md): source target,
+  runtime inputs, display, framework services and front-light configuration.
+- [Aura C device setup](profiles/aura-c/DEVICE_SETUP.md): access, recovery,
+  temporary DSU, permanent installation and verification.
+- [Ink Controls](android/ink-controls/README.md): current app source, build and
+  service contract. Select it instead of the older Neo2Controls module.
+- [Color pipeline](docs/COLOR_LEARNINGS.md): implementation and test procedure.
 
 ## Quick host check
 
@@ -39,6 +55,12 @@ ctest --test-dir /tmp/eink-aosp-lab-build --output-on-failure
 ```
 
 ## What a new builder needs
+
+The commands below build the Neo 2 Android-17 profile. See
+[Android integration targets](docs/ANDROID_INTEGRATION.md) for Android 14 and
+[color presentation](docs/COLOR.md) for reusable color policy. The
+[Aura C reference](profiles/aura-c/README.md) records its distinct backend
+contract; it does not yet supply an equivalent public build recipe.
 
 - Linux x86_64 workstation with network access, Android `repo`, JDK/toolchain,
   and enough disk for a full AOSP checkout plus build output.

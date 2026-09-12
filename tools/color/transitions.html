@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Color transition fixture</title>
+<style>
+  body { margin: 16px; font: 18px sans-serif; background: white; color: black; }
+  button, label { display: inline-block; padding: 12px; margin: 4px; font: inherit; }
+  button { background: #eee; color: black; border: 2px solid black; }
+  canvas { display: block; width: 100%; height: auto; border: 1px solid black; }
+  #activity { width: 32px; height: 32px; border: 1px solid black; background: #aaa; }
+</style>
+<h1>Color transitions</h1>
+<p>Compare uniform target rows after different origins. No browser white phase
+is inserted. Backend treatment and cleanup are controlled separately.</p>
+<div>
+  <button id="bw">Black/white origin</button>
+  <button id="colors">Color origin</button>
+  <button id="target">Target colors</button>
+  <label><input id="animate" type="checkbox"> Independent animation</label>
+</div>
+<div id="activity" aria-label="Independent gray animation square"></div>
+<p id="state" aria-live="polite">Origin: black/white</p>
+<canvas id="chart" width="960" height="960" aria-label="Transition comparison patches"></canvas>
+<p>Target: red, green, blue, cyan, magenta, yellow, muted colors, then neutral
+gray. Look for vertical residue in the first six rows; compare shading below.</p>
+<script>
+'use strict';
+const chart = document.getElementById('chart');
+const ctx = chart.getContext('2d', {alpha: false});
+const rows = ['#f03030', '#30c050', '#3050e0', '#30c0c0', '#c040b0', '#e0c030'];
+function draw(kind) {
+  // Full replacement with opaque pixels; no clearRect/white frame in between.
+  for (let row = 0; row < 8; row++) {
+    for (let col = 0; col < 12; col++) {
+      let color;
+      if (kind === 'bw') color = col % 2 ? '#fff' : '#000';
+      else if (kind === 'colors') color = col % 2 ? '#2040c0' : '#d02060';
+      else if (row < 6) color = rows[row];
+      else if (row === 6) color = `rgb(${100+col*10},${80+col*10},${70+col*10})`;
+      else { const gray = 24+col*20; color = `rgb(${gray},${gray},${gray})`; }
+      ctx.fillStyle = color;
+      ctx.fillRect(col*80, row*120, 80, 120);
+    }
+  }
+  document.getElementById('state').textContent = kind === 'target'
+    ? 'Target colors' : kind === 'bw' ? 'Origin: black/white' : 'Origin: alternating colors';
+}
+for (const kind of ['bw', 'colors', 'target'])
+  document.getElementById(kind).addEventListener('click', () => draw(kind));
+let timer = null, dark = false;
+const animation = document.getElementById('animate');
+function stop() {
+  clearInterval(timer); timer = null; animation.checked = false;
+  document.getElementById('activity').style.background = '#aaa';
+}
+animation.addEventListener('change', () => {
+  if (!animation.checked) { stop(); return; }
+  timer = setInterval(() => {
+    dark = !dark;
+    document.getElementById('activity').style.background = dark ? '#555' : '#bbb';
+  }, 333);
+});
+document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); });
+draw('bw');
+</script>
+</html>

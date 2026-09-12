@@ -2,6 +2,24 @@
 
 ## Unreleased source refresh
 
+- Publish working Aura C Android-14 integration and owner-operated recovery,
+  DSU and system-installation instructions with private values left local.
+- Include current Ink Controls source and its host-tested catalog, preference
+  and panel tools, with generated fallback art and no bundled binary assets.
+- Expand repository scope to instructional recovery/installation material;
+  retain explicit authorization for executing each device mutation.
+
+- Carry over exact RGB tracking and backend-configured marker-start policy
+  with behavioral tests, including equal-luma changes and dropped-intermediate
+  hazards. Document the deeper color pipeline findings and add an offline
+  transition fixture with separately controlled unrelated animation.
+
+- Add device-neutral RGBA neutral-tint and Vivid treatment, plus selective
+  color-transition preparation with acceptance-only history and host tests.
+- Separate Android framework targets, color policies, and model/runtime
+  contracts; document Android-14 integration and the Aura C reference without
+  importing private build infrastructure or claiming a public Aura build.
+
 - Harden sleep-image lifecycle delivery, shared-memory ownership, and
   terminal-frame ordering.
 - Add bounded, generation-checked catalog storage with exact preview and

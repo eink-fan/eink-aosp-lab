@@ -1,0 +1,2411 @@
+diff --git a/services/core/java/com/android/server/neo2/Neo2SleepImageGeometry.java b/services/core/java/com/android/server/neo2/Neo2SleepImageGeometry.java
+new file mode 100644
+--- /dev/null
++++ b/services/core/java/com/android/server/neo2/Neo2SleepImageGeometry.java
+@@ -0,0 +1,38 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ */
++package com.android.server.neo2;
++
++/**
++ * Build-profile-bound Aura C sleep-image geometry.
++ *
++ * Catalog planes are panel-facing 2480x1860 grayscale/alpha buffers. The
++ * separate 3840x1280 Kaleido electrical layout is a vendor CFA output and is
++ * never accepted as catalog transport geometry.
++ */
++final class Neo2SleepImageGeometry {
++    static final int PANEL_WIDTH = 2480;
++    static final int PANEL_HEIGHT = 1860;
++    static final int PANEL_BYTES = 4_612_800;
++
++    private Neo2SleepImageGeometry() { }
++
++    static int panelBytesFor(int width, int height) {
++        return width == PANEL_WIDTH && height == PANEL_HEIGHT ? PANEL_BYTES : -1;
++    }
++
++    static boolean isHomogeneousExpected(int[] widths, int[] heights) {
++        if (widths == null || heights == null || widths.length == 0 ||
++                widths.length != heights.length) {
++            return false;
++        }
++        for (int index = 0; index < widths.length; ++index) {
++            if (panelBytesFor(widths[index], heights[index]) != PANEL_BYTES) {
++                return false;
++            }
++        }
++        return true;
++    }
++}
+diff --git a/services/core/java/com/android/server/neo2/Neo2SleepImageManagerInternal.java b/services/core/java/com/android/server/neo2/Neo2SleepImageManagerInternal.java
+new file mode 100644
+--- /dev/null
++++ b/services/core/java/com/android/server/neo2/Neo2SleepImageManagerInternal.java
+@@ -0,0 +1,18 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ */
++package com.android.server.neo2;
++
++/** System-server-only default-display power-intent handoff. */
++public abstract class Neo2SleepImageManagerInternal {
++    /** Called once before the policy turning-off callback and fade. */
++    public abstract void beginDefaultDisplayOff();
++
++    /** Remaining bounded panel-settle time; zero when no accepted sleep image is pending. */
++    public abstract long defaultDisplayOffDelayMillis();
++
++    /** Called when that turning-off intent is abandoned before real OFF. */
++    public abstract void cancelDefaultDisplayOff();
++}
+diff --git a/services/core/java/com/android/server/neo2/Neo2SleepImageManagerService.java b/services/core/java/com/android/server/neo2/Neo2SleepImageManagerService.java
+new file mode 100644
+--- /dev/null
++++ b/services/core/java/com/android/server/neo2/Neo2SleepImageManagerService.java
+@@ -0,0 +1,842 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ */
++package com.android.server.neo2;
++
++import android.content.BroadcastReceiver;
++import android.content.ComponentName;
++import android.content.Context;
++import android.content.Intent;
++import android.content.IntentFilter;
++import android.content.ServiceConnection;
++import android.content.pm.PackageManager;
++import android.database.ContentObserver;
++import android.hardware.display.DisplayManager;
++import android.os.Binder;
++import android.os.Handler;
++import android.os.HandlerThread;
++import android.os.IBinder;
++import android.os.Parcel;
++import android.os.ParcelFileDescriptor;
++import android.os.RemoteException;
++import android.os.ServiceManager;
++import android.os.SharedMemory;
++import android.os.UserHandle;
++import android.provider.Settings;
++import android.util.Slog;
++import android.view.Display;
++
++import com.android.server.SystemService;
++
++import java.util.ArrayList;
++import java.util.Random;
++
++/**
++ * Framework-owned ordering authority for B016. The worker owns the current
++ * screen-off epoch and random choice; it never runs on SurfaceFlinger's
++ * composition thread and makes no panel-completion claim.
++ */
++public final class Neo2SleepImageManagerService extends SystemService {
++    private static final String TAG = "Neo2SleepImageManager";
++    private static final String PROVIDER_PACKAGE = "org.neo2.controls";
++    private static final String PROVIDER_CLASS =
++            "org.neo2.controls.SleepImageCatalogService";
++    private static final String PROVIDER_DESCRIPTOR = "org.neo2.controls.ISleepImageCatalog";
++    private static final String SF_SERVICE = "neo2_sleep_image";
++    private static final String SF_DESCRIPTOR = "android.neo2.INeo2SleepImage";
++    private static final String CONTROL_SERVICE = "neo2_sleep_image_manager";
++    private static final String CONTROL_DESCRIPTOR = "android.neo2.INeo2SleepImageManager";
++    private static final String CONTROL_PERMISSION =
++            "org.neo2.controls.permission.MANAGE_SLEEP_IMAGES";
++    private static final int CONTROL_SET_MODE = IBinder.FIRST_CALL_TRANSACTION;
++    private static final int CONTROL_REFRESH_CATALOG = CONTROL_SET_MODE + 1;
++    private static final int CONTROL_RESULT_QUEUED = 0;
++    private static final int PROVIDER_REQUEST_CATALOG = IBinder.FIRST_CALL_TRANSACTION;
++    private static final int PROVIDER_RESULT_CATALOG = IBinder.FIRST_CALL_TRANSACTION;
++    private static final int SF_PUBLISH = IBinder.FIRST_CALL_TRANSACTION;
++    private static final int SF_SCREEN_OFF = SF_PUBLISH + 1;
++    private static final int SF_SCREEN_ON = SF_PUBLISH + 2;
++    private static final int PROVIDER_PROTOCOL_VERSION = 5;
++    private static final int SF_PROTOCOL_VERSION = 3;
++    private static final int RESULT_OK = 0;
++    private static final int RESULT_UNAVAILABLE = 1;
++    private static final int RESULT_EMPTY = 2;
++    private static final int REASON_NONE = 0;
++    private static final int REASON_STORE_IO = 1;
++    private static final int REASON_SHARED_MEMORY = 2;
++    private static final int REASON_NO_VALID_CANDIDATE = 3;
++    private static final String CALLBACK_DESCRIPTOR =
++            "org.neo2.controls.ISleepImageCatalogCallback";
++    private static final String REFRESH_CALLBACK_DESCRIPTOR =
++            "org.neo2.controls.ISleepImageRefreshCallback";
++    private static final int REFRESH_CALLBACK_RESULT = IBinder.FIRST_CALL_TRANSACTION;
++    private static final int MAXIMUM_ENTRIES = 8;
++    private static final int MAXIMUM_REQUESTS_PER_CONNECTION = 2;
++    private static final long REQUEST_TIMEOUT_MILLIS = 5_000;
++    private static final int DISPLAY_STATE_UNINITIALIZED = -1;
++    private static final String MODE_SETTING = "neo2_sleep_image_mode";
++    private static final int MODE_KEEP_LAST_SCREEN = 0;
++    private static final int MODE_SLEEP_IMAGE = 1;
++    private static final int MODE_OVERLAY_SLEEP_IMAGE = 2;
++    private static final int MODE_KOREADER_COVER = 3;
++
++    private final HandlerThread mThread = new HandlerThread(TAG);
++    private final Handler mHandler;
++    private final ContentObserver mModeObserver;
++    // Default-display state and provider work are serialized on mHandler. This
++    // lock also orders Binder callbacks with the active arm/disarm epoch.
++    private final Object mStateLock = new Object();
++    private final Random mRandom = new Random();
++    private final DisplayManager mDisplayManager;
++    private IBinder mProvider;
++    private volatile int mProviderUid = -1;
++    private long mEpoch;
++    private long mRequestGeneration;
++    private int mDefaultDisplayState = DISPLAY_STATE_UNINITIALIZED;
++    private boolean mScreenOff;
++    private int mSleepImageMode = MODE_SLEEP_IMAGE;
++    private boolean mModeInitialized;
++    private boolean mSleepPresentationRequested;
++    private final Neo2SleepImagePowerOffGuard mPowerOffGuard = new Neo2SleepImagePowerOffGuard();
++    private boolean mUserAvailable;
++    private boolean mRequestInFlight;
++    private int mRequestsThisConnection;
++    private long mPendingStoreGeneration;
++    private IBinder mPendingRefreshCallback;
++    // Owned only by the manager worker. Screen-off duplicates this snapshot;
++    // it never asks the Controls provider for a candidate.
++    private ArrayList<Candidate> mRetainedCatalog = new ArrayList<>();
++    private long mRequestsIssued;
++    private long mRequestTransportFailures;
++    private long mRequestTimeouts;
++    private long mProviderResultOk;
++    private long mProviderResultUnavailable;
++    private long mProviderResultEmpty;
++    private long mCallbackAccepted;
++    private long mCallbackInvalid;
++    private long mCallbackStale;
++    private long mCallbackWrongCaller;
++    private long mCallbackScreenOff;
++    private long mCallbackFdFailures;
++    private long mRetainedCatalogUpdates;
++    private long mEndpointAccepted;
++    private long mEndpointRejected;
++    private long mSelections;
++    private long mFallbackSelections;
++    private long mBlackFallbacks;
++    private long mScreenEdgesReceived;
++    private long mScreenOffEpochDelivered;
++    private long mScreenOnEpochDelivered;
++
++    public Neo2SleepImageManagerService(Context context) {
++        super(context);
++        mThread.start();
++        mHandler = new Handler(mThread.getLooper());
++        mModeObserver = new ContentObserver(mHandler) {
++            @Override public void onChange(boolean selfChange) {
++                refreshSleepImageMode();
++            }
++        };
++        mDisplayManager = context.getSystemService(DisplayManager.class);
++    }
++
++    @Override public void onStart() {
++        publishLocalService(Neo2SleepImageManagerInternal.class, mLocalService);
++        publishBinderService(CONTROL_SERVICE, mControlService);
++        IntentFilter filter = new IntentFilter(Intent.ACTION_USER_UNLOCKED);
++        getContext().registerReceiverAsUser(mUserReceiver, UserHandle.ALL, filter, null, null);
++        mDisplayManager.registerDisplayListener(mDisplayListener, mHandler);
++        // Establish the baseline only. An arm requires a later observed
++        // non-OFF -> OFF transition, never service startup or a wake edge.
++        mHandler.post(this::observeDefaultDisplayState);
++    }
++
++    @Override public void onBootPhase(int phase) {
++        if (phase != SystemService.PHASE_SYSTEM_SERVICES_READY || mModeInitialized) {
++            return;
++        }
++        mModeInitialized = true;
++        getContext().getContentResolver().registerContentObserver(
++                Settings.Global.getUriFor(MODE_SETTING), false, mModeObserver);
++        refreshSleepImageMode();
++    }
++
++    private void bindProviderAfterUserAvailable() {
++        Intent provider = new Intent().setComponent(new ComponentName(PROVIDER_PACKAGE, PROVIDER_CLASS));
++        getContext().bindServiceAsUser(provider, mProviderConnection, Context.BIND_AUTO_CREATE,
++                UserHandle.SYSTEM);
++    }
++
++    private final BroadcastReceiver mUserReceiver = new BroadcastReceiver() {
++        @Override public void onReceive(Context context, Intent intent) {
++            if (Intent.ACTION_USER_UNLOCKED.equals(intent.getAction()) &&
++                    intent.getIntExtra(Intent.EXTRA_USER_HANDLE, UserHandle.USER_NULL) == UserHandle.USER_SYSTEM) {
++                mHandler.post(() -> {
++                    synchronized (mStateLock) {
++                        mUserAvailable = true;
++                        bindProviderAfterUserAvailable();
++                    }
++                });
++            }
++        }
++    };
++
++    private final DisplayManager.DisplayListener mDisplayListener =
++            new DisplayManager.DisplayListener() {
++        @Override public void onDisplayAdded(int displayId) { }
++
++        @Override public void onDisplayRemoved(int displayId) { }
++
++        @Override public void onDisplayChanged(int displayId) {
++            if (displayId == Display.DEFAULT_DISPLAY) observeDefaultDisplayState();
++        }
++    };
++
++    private void observeDefaultDisplayState() {
++        final Display display = mDisplayManager.getDisplay(Display.DEFAULT_DISPLAY);
++        if (display == null) return;
++        final int state = display.getState();
++        boolean refreshCatalog = false;
++        synchronized (mStateLock) {
++            final int previous = mDefaultDisplayState;
++            if (previous == state) return;
++            mDefaultDisplayState = state;
++            if (previous == DISPLAY_STATE_UNINITIALIZED) return;
++            if (previous != Display.STATE_OFF && state == Display.STATE_OFF) {
++                // The authoritative arm is the synchronous pre-OFF handoff
++                // from DisplayPowerController. This observer reconciles only.
++                reconcileScreenOffLocked();
++            } else if (previous == Display.STATE_OFF && state != Display.STATE_OFF) {
++                refreshCatalog = handleScreenOnLocked();
++            }
++        }
++        if (refreshCatalog) requestRetainedCatalog();
++    }
++
++    private final ServiceConnection mProviderConnection = new ServiceConnection() {
++        @Override public void onServiceConnected(ComponentName name, IBinder service) {
++            mHandler.post(() -> {
++                synchronized (mStateLock) {
++                    mProvider = service;
++                    mProviderUid = resolveProviderUid();
++                    mRequestsThisConnection = 0;
++                    requestRetainedCatalog();
++                }
++            });
++        }
++        @Override public void onServiceDisconnected(ComponentName name) {
++            mHandler.post(() -> {
++                synchronized (mStateLock) {
++                    mProvider = null;
++                    mProviderUid = -1;
++                    ++mRequestGeneration;
++                    mRequestInFlight = false;
++                    mRequestsThisConnection = 0;
++                    finishRefreshLocked(RESULT_UNAVAILABLE);
++                }
++            });
++        }
++    };
++
++    private final Neo2SleepImageManagerInternal mLocalService =
++            new Neo2SleepImageManagerInternal() {
++        @Override public void beginDefaultDisplayOff() {
++            synchronized (mStateLock) {
++                beginScreenOffLocked();
++            }
++        }
++
++        @Override public long defaultDisplayOffDelayMillis() {
++            synchronized (mStateLock) {
++                return mPowerOffGuard.remaining(android.os.SystemClock.uptimeMillis());
++            }
++        }
++
++        @Override public void cancelDefaultDisplayOff() {
++            synchronized (mStateLock) {
++                cancelScreenOffLocked();
++            }
++        }
++    };
++
++    // Caller holds mStateLock before policy is told that the default display
++    // is turning off. Mode and catalog state were cached while awake.
++    private void beginScreenOffLocked() {
++        if (mScreenOff) return;
++        mScreenOff = true;
++        mSleepPresentationRequested = false;
++        ++mScreenEdgesReceived;
++        if (mSleepImageMode != MODE_KEEP_LAST_SCREEN) {
++            if (sendEpoch(SF_SCREEN_OFF, mEpoch)) {
++                mSleepPresentationRequested = true;
++                // The legacy Aura HWC stops the controller at OFF even with a CPU wake lock.
++                // Queue acceptance is not panel completion: allow a bounded settling interval.
++                if ("aura_c".equals(android.os.SystemProperties.get(
++                        "ro.neo2.eink.device_variant", ""))) {
++                    mPowerOffGuard.start(android.os.SystemClock.uptimeMillis());
++                }
++                ++mScreenOffEpochDelivered;
++            }
++        } else {
++            if (sendEpoch(SF_SCREEN_ON, mEpoch)) ++mScreenOnEpochDelivered;
++        }
++        logAsyncDiagnostics();
++    }
++
++    // Caller holds mStateLock when Android abandons turning off before an OFF
++    // edge. Withdraw a pending direct candidate and resume ordinary capture.
++    private void cancelScreenOffLocked() {
++        if (!mScreenOff) return;
++        final boolean renewEpoch = mSleepPresentationRequested;
++        ++mScreenEdgesReceived;
++        if (mSleepPresentationRequested && sendEpoch(SF_SCREEN_ON, mEpoch)) {
++            ++mScreenOnEpochDelivered;
++        }
++        mSleepPresentationRequested = false;
++        mPowerOffGuard.cancel();
++        mScreenOff = false;
++        // Cancellation never produces a display OFF/ON edge. Renew the consumed epoch
++        // from our retained descriptors now, so even an immediate second sleep works.
++        // This does not decode images or wait on the application provider.
++        if (renewEpoch) {
++            ArrayList<Candidate> publication = copyRetainedCatalog();
++            if (publication != null && !publication.isEmpty()) {
++                int selected = selectCandidateIndex(publication);
++                if (selected >= 0) {
++                    ++mSelections;
++                    if (publication.get(selected).fallback) ++mFallbackSelections;
++                    recordEndpointResult(sendCatalog(++mEpoch, publication,
++                            selected, mSleepImageMode));
++                } else {
++                    closeAll(publication);
++                }
++            } else {
++                closeAll(publication);
++            }
++        }
++        logAsyncDiagnostics();
++    }
++
++    // Caller holds mStateLock after observing OFF. Never arm here: this path
++    // also handles startup while already OFF and a missing pre-OFF service.
++    private void reconcileScreenOffLocked() {
++        if (mScreenOff) return;
++        mScreenOff = true;
++        ++mScreenEdgesReceived;
++        logAsyncDiagnostics();
++    }
++
++    private void refreshSleepImageMode() {
++        int mode = Settings.Global.getInt(getContext().getContentResolver(),
++                MODE_SETTING, MODE_SLEEP_IMAGE);
++        if (!validSleepImageMode(mode)) {
++            mode = MODE_SLEEP_IMAGE;
++        }
++        synchronized (mStateLock) {
++            if (mode == mSleepImageMode) return;
++            mSleepImageMode = mode;
++            ++mRequestGeneration;
++            mRequestInFlight = false;
++            mRequestsThisConnection = 0;
++            ArrayList<Candidate> previous = mRetainedCatalog;
++            mRetainedCatalog = new ArrayList<>();
++            closeAll(previous);
++            if (!mScreenOff && mode != MODE_KEEP_LAST_SCREEN) {
++                requestRetainedCatalog();
++            }
++        }
++    }
++
++    private static boolean validSleepImageMode(int mode) {
++        return mode == MODE_KEEP_LAST_SCREEN || mode == MODE_SLEEP_IMAGE ||
++                mode == MODE_OVERLAY_SLEEP_IMAGE || mode == MODE_KOREADER_COVER;
++    }
++
++    private void writeSleepImageMode(int mode) {
++        if (!Settings.Global.putInt(getContext().getContentResolver(), MODE_SETTING, mode)) {
++            Slog.w(TAG, "Sleep image mode write was rejected");
++            return;
++        }
++    }
++
++    private final IBinder mControlService = new Binder() {
++        @Override protected boolean onTransact(int code, Parcel data, Parcel reply, int flags) {
++            if ((code != CONTROL_SET_MODE && code != CONTROL_REFRESH_CATALOG) ||
++                    (flags & IBinder.FLAG_ONEWAY) != 0) return false;
++            data.enforceInterface(CONTROL_DESCRIPTOR);
++            getContext().enforceCallingPermission(CONTROL_PERMISSION,
++                    "Managing Neo2 sleep images requires MANAGE_SLEEP_IMAGES");
++            if (code == CONTROL_REFRESH_CATALOG) {
++                final long storeGeneration = data.readLong();
++                final IBinder callback = data.readStrongBinder();
++                data.enforceNoDataAvail();
++                if (storeGeneration <= 0 || callback == null) {
++                    throw new IllegalArgumentException("Invalid catalog refresh request");
++                }
++                synchronized (mStateLock) {
++                    if (mScreenOff || !mUserAvailable || mProvider == null || mProviderUid < 0) {
++                        reply.writeNoException();
++                        reply.writeInt(RESULT_UNAVAILABLE);
++                        return true;
++                    }
++                    finishRefreshLocked(RESULT_UNAVAILABLE);
++                    mPendingStoreGeneration = storeGeneration;
++                    mPendingRefreshCallback = callback;
++                    ++mRequestGeneration;
++                    mRequestInFlight = false;
++                    mRequestsThisConnection = 0;
++                    requestRetainedCatalog();
++                }
++                reply.writeNoException();
++                reply.writeInt(RESULT_OK);
++                return true;
++            }
++            final int mode = data.readInt();
++            data.enforceNoDataAvail();
++            if (!validSleepImageMode(mode)) {
++                throw new IllegalArgumentException("Unsupported sleep image mode");
++            }
++            mHandler.post(() -> writeSleepImageMode(mode));
++            reply.writeNoException();
++            reply.writeInt(CONTROL_RESULT_QUEUED);
++            return true;
++        }
++    };
++
++    // Caller holds mStateLock after the matching default-display ON edge.
++    private boolean handleScreenOnLocked() {
++        if (!mScreenOff) return false;
++        ++mScreenEdgesReceived;
++        if (mSleepPresentationRequested && sendEpoch(SF_SCREEN_ON, mEpoch)) {
++            ++mScreenOnEpochDelivered;
++        }
++        mSleepPresentationRequested = false;
++        mPowerOffGuard.cancel();
++        mScreenOff = false;
++        ++mRequestGeneration;
++        mRequestInFlight = false;
++        mRequestsThisConnection = 0;
++        logAsyncDiagnostics();
++        return true;
++    }
++
++    // The only provider request is one-way and only issued while the display
++    // is on. Screen-off neither performs provider I/O nor waits for a result.
++    private void requestRetainedCatalog() {
++        synchronized (mStateLock) {
++            if (mScreenOff || !mUserAvailable || mProvider == null || mProviderUid < 0 ||
++                    mRequestInFlight || mRequestsThisConnection >= MAXIMUM_REQUESTS_PER_CONNECTION) return;
++            final long generation = ++mRequestGeneration;
++            Parcel data = Parcel.obtain();
++            mRequestInFlight = true;
++            ++mRequestsIssued;
++            ++mRequestsThisConnection;
++            try {
++                data.writeInterfaceToken(PROVIDER_DESCRIPTOR);
++                data.writeInt(PROVIDER_PROTOCOL_VERSION);
++                data.writeLong(generation);
++                data.writeInt(mSleepImageMode);
++                data.writeStrongBinder(mProviderCallback);
++                if (!mProvider.transact(PROVIDER_REQUEST_CATALOG, data, null, IBinder.FLAG_ONEWAY)) {
++                    mRequestInFlight = false;
++                    ++mRequestTransportFailures;
++                    finishRefreshLocked(RESULT_UNAVAILABLE);
++                } else {
++                    mHandler.postDelayed(() -> handleRequestTimeout(generation), REQUEST_TIMEOUT_MILLIS);
++                }
++            } catch (RemoteException | RuntimeException e) {
++                mRequestInFlight = false;
++                ++mRequestTransportFailures;
++                finishRefreshLocked(RESULT_UNAVAILABLE);
++            } finally {
++                data.recycle();
++                logAsyncDiagnostics();
++            }
++        }
++    }
++
++    // A one-way Binder acceptance has no reply. Limit recovery to one additional
++    // request per provider connection/screen-on interval so a lost callback cannot
++    // hold the retained catalog hostage or create an unbounded retry loop.
++    private void handleRequestTimeout(long generation) {
++        synchronized (mStateLock) {
++            if (!mRequestInFlight || generation != mRequestGeneration) return;
++            mRequestInFlight = false;
++            ++mRequestTimeouts;
++            if (!mScreenOff) requestRetainedCatalog();
++            if (mScreenOff ||
++                    (!mRequestInFlight && mRequestsThisConnection >= MAXIMUM_REQUESTS_PER_CONNECTION)) {
++                finishRefreshLocked(RESULT_UNAVAILABLE);
++            }
++            logAsyncDiagnostics();
++        }
++    }
++
++    private int resolveProviderUid() {
++        try {
++            return getContext().getPackageManager().getPackageUid(PROVIDER_PACKAGE, 0);
++        } catch (PackageManager.NameNotFoundException e) {
++            return -1;
++        }
++    }
++
++    private final IBinder mProviderCallback = new Binder() {
++        @Override protected boolean onTransact(int code, Parcel data, Parcel reply, int flags) {
++            if (code != PROVIDER_RESULT_CATALOG || (flags & IBinder.FLAG_ONEWAY) == 0 ||
++                    Binder.getCallingUid() != mProviderUid) {
++                mHandler.post(() -> {
++                    synchronized (mStateLock) {
++                        ++mCallbackWrongCaller;
++                        logAsyncDiagnostics();
++                    }
++                });
++                return false;
++            }
++            long generation = 0;
++            ArrayList<Candidate> candidates = new ArrayList<>();
++            boolean fdFailure = false;
++            try {
++                data.enforceInterface(CALLBACK_DESCRIPTOR);
++                if (data.readInt() != PROVIDER_PROTOCOL_VERSION || (generation = data.readLong()) <= 0) {
++                    throw new IllegalArgumentException();
++                }
++                final long storeGeneration = data.readLong();
++                if (storeGeneration <= 0) throw new IllegalArgumentException();
++                final int result = data.readInt();
++                final int reason = data.readInt();
++                final int count = data.readInt();
++                if (count < 0 || count > MAXIMUM_ENTRIES || !validProviderResult(result, reason, count)) {
++                    throw new IllegalArgumentException();
++                }
++                if (result == RESULT_OK) {
++                    int[] widths = new int[count];
++                    int[] heights = new int[count];
++                    for (int index = 0; index < count; ++index) {
++                        int fallback = data.readInt();
++                        int eligible = data.readInt();
++                        int width = data.readInt();
++                        int height = data.readInt();
++                        widths[index] = width;
++                        heights[index] = height;
++                        int panelBytes = Neo2SleepImageGeometry.panelBytesFor(width, height);
++                        if ((fallback != 0 && fallback != 1) ||
++                                (eligible != 0 && eligible != 1) ||
++                                panelBytes <= 0) {
++                            throw new IllegalArgumentException();
++                        }
++                        ParcelFileDescriptor grayTransport = data.readFileDescriptor();
++                        ParcelFileDescriptor alphaTransport = data.readFileDescriptor();
++                        ParcelFileDescriptor grayFd = null;
++                        ParcelFileDescriptor alphaFd = null;
++                        try {
++                            grayFd = duplicateValidatedSharedMemory(grayTransport, Math.multiplyExact(panelBytes, 4));
++                            alphaFd = duplicateValidatedSharedMemory(alphaTransport, panelBytes);
++                        } catch (java.io.IOException | RuntimeException e) {
++                            try { if (grayFd != null) grayFd.close(); }
++                            catch (java.io.IOException ignored) { }
++                            try { if (alphaFd != null) alphaFd.close(); }
++                            catch (java.io.IOException ignored) { }
++                            fdFailure = true;
++                            throw e;
++                        }
++                        if (grayFd == null || alphaFd == null) {
++                            if (grayFd != null) grayFd.close();
++                            if (alphaFd != null) alphaFd.close();
++                            throw new IllegalArgumentException();
++                        }
++                        candidates.add(new Candidate(grayFd, alphaFd,
++                                width, height, fallback == 1, eligible == 1));
++                    }
++                    if (!Neo2SleepImageGeometry.isHomogeneousExpected(widths, heights) ||
++                            !validCandidateMetadata(candidates)) {
++                        throw new IllegalArgumentException();
++                    }
++                }
++                if (data.dataAvail() != 0) throw new IllegalArgumentException();
++                final long callbackGeneration = generation;
++                mHandler.post(() -> handleProviderCallback(callbackGeneration, storeGeneration,
++                        result, candidates, true, false));
++            } catch (java.io.IOException | RuntimeException e) {
++                closeAll(candidates);
++                final long callbackGeneration = generation;
++                final boolean callbackFdFailure = fdFailure;
++                mHandler.post(() -> handleProviderCallback(callbackGeneration, 0,
++                        RESULT_UNAVAILABLE, null, false, callbackFdFailure));
++            }
++            return true;
++        }
++    };
++
++    private static boolean validProviderResult(int result, int reason, int count) {
++        return (result == RESULT_OK && reason == REASON_NONE && count > 0) ||
++                (result == RESULT_UNAVAILABLE && count == 0 &&
++                        (reason == REASON_STORE_IO || reason == REASON_SHARED_MEMORY)) ||
++                (result == RESULT_EMPTY && reason == REASON_NO_VALID_CANDIDATE && count == 0);
++    }
++
++    private static boolean validCandidateMetadata(ArrayList<Candidate> candidates) {
++        int fallbackCount = 0;
++        int eligibleCount = 0;
++        int width = candidates.isEmpty() ? -1 : candidates.get(0).width;
++        int height = candidates.isEmpty() ? -1 : candidates.get(0).height;
++        for (Candidate candidate : candidates) {
++            if (candidate.width != width || candidate.height != height) return false;
++            if (candidate.fallback) ++fallbackCount;
++            if (candidate.eligible) ++eligibleCount;
++        }
++        return fallbackCount == 1 && eligibleCount > 0;
++    }
++
++    private static ParcelFileDescriptor duplicateValidatedSharedMemory(
++            ParcelFileDescriptor transport, int expectedBytes) throws java.io.IOException {
++        if (transport == null) throw new java.io.IOException("missing shared memory");
++        SharedMemory memory = null;
++        try {
++            memory = SharedMemory.fromFileDescriptor(transport);
++            transport = null; // SharedMemory owns the detached transport descriptor.
++            if (memory.getSize() != expectedBytes) {
++                throw new java.io.IOException("wrong shared memory size");
++            }
++            return ParcelFileDescriptor.dup(memory.getFileDescriptor());
++        } finally {
++            if (memory != null) memory.close();
++            else if (transport != null) transport.close();
++        }
++    }
++
++    private void handleProviderCallback(long generation, long storeGeneration, int result,
++            ArrayList<Candidate> candidates, boolean valid, boolean fdFailure) {
++        synchronized (mStateLock) {
++          if (!valid) {
++            ++mCallbackInvalid;
++            if (fdFailure) ++mCallbackFdFailures;
++            // A malformed callback from the expected provider may fail before its
++            // generation is readable. Clear only the current request; caller and
++            // screen-off checks remain enforced by the Binder boundary above.
++            if (generation == 0 || generation == mRequestGeneration) mRequestInFlight = false;
++            closeAll(candidates);
++            if (generation == 0 || generation == mRequestGeneration) {
++                finishRefreshLocked(RESULT_UNAVAILABLE);
++            }
++            logAsyncDiagnostics();
++              return;
++          }
++          if (generation != mRequestGeneration) {
++            ++mCallbackStale;
++            closeAll(candidates);
++            logAsyncDiagnostics();
++              return;
++          }
++          mRequestInFlight = false;
++          if (result == RESULT_OK) ++mProviderResultOk;
++          else if (result == RESULT_EMPTY) ++mProviderResultEmpty;
++          else ++mProviderResultUnavailable;
++          if (mScreenOff) {
++            ++mCallbackScreenOff;
++            closeAll(candidates);
++            finishRefreshLocked(RESULT_UNAVAILABLE);
++            logAsyncDiagnostics();
++              return;
++          }
++          ++mCallbackAccepted;
++          if (mPendingRefreshCallback != null &&
++                  (result != RESULT_OK || storeGeneration != mPendingStoreGeneration)) {
++            closeAll(candidates);
++            finishRefreshLocked(RESULT_UNAVAILABLE);
++            logAsyncDiagnostics();
++            return;
++          }
++          if (result == RESULT_OK) {
++            ArrayList<Candidate> previous = mRetainedCatalog;
++            mRetainedCatalog = candidates;
++            ++mRetainedCatalogUpdates;
++            // Retained descriptors remain manager-owned. sendCatalog closes
++            // only this per-publication duplicate under its existing contract.
++            ArrayList<Candidate> publication = copyRetainedCatalog();
++            if (mSleepImageMode == MODE_KEEP_LAST_SCREEN) {
++                closeAll(publication);
++            } else if (publication != null && !publication.isEmpty()) {
++                int selected = selectCandidateIndex(publication);
++                if (selected >= 0) {
++                    ++mSelections;
++                    if (publication.get(selected).fallback) ++mFallbackSelections;
++                    recordEndpointResult(sendCatalog(++mEpoch, publication,
++                            selected, mSleepImageMode));
++                } else {
++                    closeAll(publication);
++                    ++mBlackFallbacks;
++                }
++            } else {
++                closeAll(publication);
++                ++mBlackFallbacks;
++            }
++            closeAll(previous);
++            if (storeGeneration == mPendingStoreGeneration) finishRefreshLocked(RESULT_OK);
++          } else {
++            closeAll(candidates);
++          }
++          logAsyncDiagnostics();
++        }
++    }
++
++    // Caller holds mStateLock. The app receives store durability separately;
++    // this one-way result reports only retained-catalog synchronization.
++    private void finishRefreshLocked(int result) {
++        IBinder callback = mPendingRefreshCallback;
++        long storeGeneration = mPendingStoreGeneration;
++        mPendingRefreshCallback = null;
++        mPendingStoreGeneration = 0;
++        if (callback == null) return;
++        Parcel data = Parcel.obtain();
++        try {
++            data.writeInterfaceToken(REFRESH_CALLBACK_DESCRIPTOR);
++            data.writeLong(storeGeneration);
++            data.writeInt(result);
++            callback.transact(REFRESH_CALLBACK_RESULT, data, null, IBinder.FLAG_ONEWAY);
++        } catch (RemoteException | RuntimeException e) {
++            Slog.w(TAG, "Sleep-image refresh result delivery failed");
++        } finally {
++            data.recycle();
++        }
++    }
++
++    private ArrayList<Candidate> copyRetainedCatalog() {
++        ArrayList<Candidate> copy = new ArrayList<>(mRetainedCatalog.size());
++        try {
++            for (Candidate candidate : mRetainedCatalog) {
++                copy.add(new Candidate(
++                        ParcelFileDescriptor.dup(candidate.grayFd.getFileDescriptor()),
++                        ParcelFileDescriptor.dup(candidate.alphaFd.getFileDescriptor()),
++                        candidate.width, candidate.height,
++                        candidate.fallback, candidate.eligible));
++            }
++            return copy;
++        } catch (java.io.IOException e) {
++            closeAll(copy);
++            Slog.w(TAG, "Sleep-image retained catalog unavailable");
++            return null;
++        }
++    }
++
++    private int selectCandidateIndex(ArrayList<Candidate> catalog) {
++        ArrayList<Integer> eligible = new ArrayList<>();
++        int fallback = -1;
++        for (int index = 0; index < catalog.size(); ++index) {
++            Candidate candidate = catalog.get(index);
++            if (candidate.fallback) fallback = index;
++            if (candidate.eligible) eligible.add(index);
++        }
++        if (!eligible.isEmpty()) return eligible.get(mRandom.nextInt(eligible.size()));
++        return fallback;
++    }
++
++    private void recordEndpointResult(boolean accepted) {
++        if (accepted) ++mEndpointAccepted;
++        else {
++            ++mEndpointRejected;
++            ++mBlackFallbacks;
++        }
++        logAsyncDiagnostics();
++    }
++
++    // Aggregate-only diagnostics: no names, paths, descriptors, image bytes,
++    // or completion implication crosses this boundary.
++    private void logAsyncDiagnostics() {
++        Slog.i(TAG, "Sleep-image async request=" + mRequestsIssued + "/" +
++                mRequestTransportFailures + "/" + mRequestTimeouts + " provider=" + mProviderResultOk + "/" +
++                mProviderResultUnavailable + "/" + mProviderResultEmpty + " callback=" +
++                mCallbackAccepted + "/" + mCallbackInvalid + "/" + mCallbackStale + "/" +
++                mCallbackWrongCaller + "/" + mCallbackScreenOff + "/" + mCallbackFdFailures + " retained=" +
++                mRetainedCatalogUpdates + " endpoint=" + mEndpointAccepted + "/" +
++                mEndpointRejected + " selection=" + mSelections + " black_fallback=" +
++                mBlackFallbacks + " source_fallback=" + mFallbackSelections + " edge=" +
++                mScreenEdgesReceived + "/" +
++                mScreenOffEpochDelivered + "/" + mScreenOnEpochDelivered +
++                " sleep_epoch=" + mEpoch +
++                " presentation_requested=" + mSleepPresentationRequested);
++    }
++
++    private boolean sendEpoch(int transaction, long epoch) {
++        IBinder endpoint = ServiceManager.getService(SF_SERVICE);
++        if (endpoint == null) return false;
++        Parcel data = Parcel.obtain();
++        Parcel reply = Parcel.obtain();
++        try {
++            data.writeInterfaceToken(SF_DESCRIPTOR);
++            data.writeInt(SF_PROTOCOL_VERSION);
++            data.writeLong(epoch);
++            if (!endpoint.transact(transaction, data, reply, 0)) return false;
++            reply.readException();
++            return reply.readInt() == SF_PROTOCOL_VERSION && reply.readInt() == RESULT_OK;
++        } catch (RemoteException | RuntimeException e) {
++            Slog.w(TAG, "Sleep-image epoch delivery failed");
++            return false;
++        } finally {
++            reply.recycle();
++            data.recycle();
++        }
++    }
++
++    private boolean sendCatalog(long epoch, ArrayList<Candidate> catalog, int selected, int mode) {
++        IBinder endpoint = ServiceManager.getService(SF_SERVICE);
++        if (endpoint == null) { closeAll(catalog); return false; }
++        Parcel data = Parcel.obtain();
++        Parcel reply = Parcel.obtain();
++        try {
++            data.writeInterfaceToken(SF_DESCRIPTOR);
++            data.writeInt(SF_PROTOCOL_VERSION);
++            data.writeLong(epoch);
++            data.writeInt(catalog.size());
++            data.writeInt(selected);
++            data.writeInt(mode == MODE_KOREADER_COVER ? MODE_SLEEP_IMAGE : mode);
++            for (Candidate candidate : catalog) {
++                data.writeInt(candidate.width);
++                data.writeInt(candidate.height);
++                data.writeFileDescriptor(candidate.grayFd.getFileDescriptor());
++                data.writeFileDescriptor(candidate.alphaFd.getFileDescriptor());
++            }
++            if (!endpoint.transact(SF_PUBLISH, data, reply, 0)) return false;
++            reply.readException();
++            if (reply.readInt() != SF_PROTOCOL_VERSION || reply.readInt() != RESULT_OK) {
++                Slog.w(TAG, "Sleep-image catalog endpoint rejected");
++                return false;
++            }
++            return true;
++        } catch (RemoteException | RuntimeException e) {
++            Slog.w(TAG, "Sleep-image catalog delivery failed");
++            return false;
++        } finally {
++            closeAll(catalog);
++            reply.recycle();
++            data.recycle();
++        }
++    }
++
++    private static void closeAll(ArrayList<Candidate> catalog) {
++        if (catalog == null) return;
++        for (Candidate candidate : catalog) {
++            try { candidate.grayFd.close(); } catch (java.io.IOException ignored) { }
++            try { candidate.alphaFd.close(); } catch (java.io.IOException ignored) { }
++        }
++    }
++
++    private static final class Candidate {
++        final ParcelFileDescriptor grayFd;
++        final ParcelFileDescriptor alphaFd;
++        final int width;
++        final int height;
++        final boolean fallback;
++        final boolean eligible;
++        Candidate(ParcelFileDescriptor grayFd, ParcelFileDescriptor alphaFd,
++                int width, int height, boolean fallback, boolean eligible) {
++            this.grayFd = grayFd;
++            this.alphaFd = alphaFd;
++            this.width = width;
++            this.height = height;
++            this.fallback = fallback;
++            this.eligible = eligible;
++        }
++    }
++}
+diff --git a/services/java/com/android/server/SystemServer.java b/services/java/com/android/server/SystemServer.java
+--- a/services/java/com/android/server/SystemServer.java
++++ b/services/java/com/android/server/SystemServer.java
+@@ -148,5 +148,6 @@ import com.android.server.media.MediaRouterService;
+ import com.android.server.media.metrics.MediaMetricsManagerService;
+ import com.android.server.media.projection.MediaProjectionManagerService;
+ import com.android.server.net.NetworkManagementService;
++import com.android.server.neo2.Neo2SleepImageManagerService;
+ import com.android.server.net.NetworkPolicyManagerService;
+ import com.android.server.net.watchlist.NetworkWatchlistService;
+@@ -1544,7 +1545,10 @@ public final class SystemServer implements Dumpable {
+             mSystemServiceManager.startService(UPDATABLE_DEVICE_CONFIG_SERVICE_CLASS);
+             // Now that SettingsProvider is ready, reactivate SQLiteCompatibilityWalFlags
+             SQLiteCompatibilityWalFlags.reset();
+             t.traceEnd();
++            t.traceBegin("StartNeo2SleepImageManager");
++            mSystemServiceManager.startService(Neo2SleepImageManagerService.class);
++            t.traceEnd();
+ 
+             // Records errors and logs, for example wtf()
+             // Currently this service indirectly depends on SettingsProvider so do this after
+diff --git a/packages/SettingsProvider/res/values/defaults.xml b/packages/SettingsProvider/res/values/defaults.xml
+--- a/packages/SettingsProvider/res/values/defaults.xml
++++ b/packages/SettingsProvider/res/values/defaults.xml
+@@ -18,7 +18,7 @@
+ -->
+ <resources>
+     <bool name="def_dim_screen">true</bool>
+-    <integer name="def_screen_off_timeout">600000</integer>
++    <integer name="def_screen_off_timeout">300000</integer>
+     <integer name="def_sleep_timeout">-1</integer>
+     <bool name="def_airplane_mode_on">false</bool>
+     <bool name="def_theater_mode_on">false</bool>
+@@ -34,8 +34,8 @@
+     <!-- Default screen brightness, from 0 to 255.  102 is 40%. -->
+     <integer name="def_screen_brightness">102</integer>
+     <bool name="def_screen_brightness_automatic_mode">false</bool>
+-    <fraction name="def_window_animation_scale">100%</fraction>
+-    <fraction name="def_window_transition_scale">100%</fraction>
++    <fraction name="def_window_animation_scale">0%</fraction>
++    <fraction name="def_window_transition_scale">0%</fraction>
+     <bool name="def_haptic_feedback">true</bool>
+ 
+     <bool name="def_bluetooth_on">true</bool>
+@@ -75,7 +75,7 @@
+     <string name="def_desk_undock_sound" translatable="false">/product/media/audio/ui/Undock.ogg</string>
+     <string name="def_car_dock_sound" translatable="false">/product/media/audio/ui/Dock.ogg</string>
+     <string name="def_car_undock_sound" translatable="false">/product/media/audio/ui/Undock.ogg</string>
+-    <integer name="def_lockscreen_sounds_enabled">1</integer>
++    <integer name="def_lockscreen_sounds_enabled">0</integer>
+     <string name="def_lock_sound" translatable="false">/product/media/audio/ui/Lock.ogg</string>
+     <string name="def_unlock_sound" translatable="false">/product/media/audio/ui/Unlock.ogg</string>
+     <string name="def_trusted_sound" translatable="false">/product/media/audio/ui/Trusted.ogg</string>
+@@ -87,7 +87,7 @@
+     <integer name="def_sound_trigger_detection_service_op_timeout" translatable="false">15000</integer>
+ 
+     <bool name="def_lockscreen_disabled">false</bool>
+-    <bool name="def_device_provisioned">false</bool>
++    <bool name="def_device_provisioned">true</bool>
+     <integer name="def_dock_audio_media_enabled">1</integer>
+ 
+     <!-- Notifications use ringer volume -->
+@@ -135,9 +135,9 @@
+     <integer name="def_pointer_speed">0</integer>
+ 
+     <!-- Default for DTMF tones enabled -->
+-    <bool name="def_dtmf_tones_enabled">true</bool>
++    <bool name="def_dtmf_tones_enabled">false</bool>
+     <!-- Default for UI touch sounds enabled -->
+-    <bool name="def_sound_effects_enabled">true</bool>
++    <bool name="def_sound_effects_enabled">false</bool>
+ 
+     <!-- Development settings -->
+     <bool name="def_stay_on_while_plugged_in">false</bool>
+@@ -147,7 +147,7 @@
+     <integer name="def_max_dhcp_retries">9</integer>
+ 
+     <!-- Default for Settings.Secure.USER_SETUP_COMPLETE -->
+-    <bool name="def_user_setup_complete">false</bool>
++    <bool name="def_user_setup_complete">true</bool>
+ 
+     <!-- Default for Settings.Global.LOW_BATTERY_SOUND_TIMEOUT.
+          0 means no timeout; battery sounds will always play
+@@ -232,7 +232,7 @@
+     <bool name="def_charging_vibration_enabled">true</bool>
+ 
+     <!-- Default for Settings.Secure.CHARGING_SOUNDS_ENABLED -->
+-    <bool name="def_charging_sounds_enabled">true</bool>
++    <bool name="def_charging_sounds_enabled">false</bool>
+ 
+     <!-- Default for Settings.Secure.NOTIFICATION_BUBBLES -->
+     <bool name="def_notification_bubbles">true</bool>
+diff --git a/packages/SettingsProvider/src/com/android/providers/settings/DatabaseHelper.java b/packages/SettingsProvider/src/com/android/providers/settings/DatabaseHelper.java
+--- a/packages/SettingsProvider/src/com/android/providers/settings/DatabaseHelper.java
++++ b/packages/SettingsProvider/src/com/android/providers/settings/DatabaseHelper.java
+@@ -2247,3 +2247,5 @@ class DatabaseHelper extends SQLiteOpenHelper {
+             loadIntegerSetting(stmt, Settings.System.USER_ROTATION, R.integer.def_user_rotation);
+ 
++            loadSetting(stmt, Settings.System.FONT_SCALE, "1.15");
++
+             loadDefaultHapticSettings(stmt);
+@@ -2433,4 +2435,5 @@ class DatabaseHelper extends SQLiteOpenHelper {
+ 
+             loadDefaultAnimationSettings(stmt);
++            loadSetting(stmt, Settings.Global.ANIMATOR_DURATION_SCALE, "0");
+ 
+             // --- Previously in 'secure'
+diff --git a/core/res/res/values/config.xml b/core/res/res/values/config.xml
+--- a/core/res/res/values/config.xml
++++ b/core/res/res/values/config.xml
+@@ -639,7 +639,7 @@
+     <!-- Indicate whether closing the lid causes the device to go to sleep and opening
+          it causes the device to wake up.
+          The default is false. -->
+-    <bool name="config_lidControlsSleep">false</bool>
++    <bool name="config_lidControlsSleep">true</bool>
+ 
+     <!-- The device states (supplied by DeviceStateManager) that should be treated as open by the
+          device fold controller. Default is empty. -->
+@@ -1417,7 +1417,7 @@
+     <bool name="config_enable_emergency_call_while_sim_locked">true</bool>
+ 
+     <!-- Is the lock-screen disabled for new users by default -->
+-    <bool name="config_disableLockscreenByDefault">false</bool>
++    <bool name="config_disableLockscreenByDefault">true</bool>
+ 
+     <!-- If true, enables verification of the lockscreen credential in the factory reset protection
+         flow. This should be true if gatekeeper / weaver credentials can still be checked after a
+@@ -2175,17 +2175,17 @@
+     <!-- Default web browser.  This is the package name of the application that will
+          be the default browser when the device first boots.  Afterwards the user
+          can select whatever browser app they wish to use as the default.
+ 
+          If this string is empty or the specified package does not exist, then
+          the behavior will be as though no app was named as an explicit default.
+ 
+          Note: This config is deprecated, please use config_defaultBrowser instead. -->
+-    <string name="default_browser" translatable="false"></string>
++    <string name="default_browser" translatable="false"></string>
+ 
+     <!-- The name of the package that will hold the assistant role by default. -->
+     <string name="config_defaultAssistant" translatable="false" />
+     <!-- Whether the default assistant settings should be shown. -->
+     <bool name="config_showDefaultAssistant">true</bool>
+     <!-- The name of the package that will hold the browser role by default. -->
+     <string name="config_defaultBrowser" translatable="false">@string/default_browser</string>
+     <!-- The name of the package that will hold the dialer role by default. -->
+diff --git a/services/core/java/com/android/server/display/DisplayPowerController.java b/services/core/java/com/android/server/display/DisplayPowerController.java
+--- a/services/core/java/com/android/server/display/DisplayPowerController.java
++++ b/services/core/java/com/android/server/display/DisplayPowerController.java
+@@ -385,6 +385,8 @@
+     // we are waiting for a callback to release it and unblock the screen.
+     private ScreenOnUnblocker mPendingScreenOnUnblocker;
+     private ScreenOffUnblocker mPendingScreenOffUnblocker;
++    private boolean mNeo2SleepImagePowerOffPending;
++    private final Runnable mNeo2SleepImagePowerOffRetry = this::sendUpdatePowerState;
+ 
+     // True if we were in the process of turning off the screen.
+     // This allows us to recover more gracefully from situations where we abort
+@@ -1993,7 +1995,8 @@
+         // Note that we do not wait for the brightness ramp animation to complete before
+         // reporting the display is ready because we only need to ensure the screen is in the
+         // right power state even as it continues to converge on the desired brightness.
+-        final boolean ready = mPendingScreenOnUnblocker == null
++        final boolean ready = !mNeo2SleepImagePowerOffPending
++                && mPendingScreenOnUnblocker == null
+                 && (!mColorFadeEnabled || (!mColorFadeOnAnimator.isStarted()
+                         && !mColorFadeOffAnimator.isStarted()))
+                 && mPowerState.waitUntilClean(mCleanListener);
+@@ -2232,12 +2235,32 @@
+             if (isOff && !mScreenOffBecauseOfProximity) {
+                 if (mReportedScreenStateToPolicy == REPORTED_TO_POLICY_SCREEN_ON
+                         || mReportedScreenStateToPolicy == REPORTED_TO_POLICY_UNREPORTED) {
++                    if (!reportOnly && mDisplayId == Display.DEFAULT_DISPLAY
++                            && mReportedScreenStateToPolicy == REPORTED_TO_POLICY_SCREEN_ON) {
++                        final com.android.server.neo2.Neo2SleepImageManagerInternal manager =
++                                LocalServices.getService(
++                                        com.android.server.neo2.Neo2SleepImageManagerInternal.class);
++                        if (manager != null) manager.beginDefaultDisplayOff();
++                    }
+                     setReportedScreenState(REPORTED_TO_POLICY_SCREEN_TURNING_OFF);
+                     blockScreenOff();
+                     mWindowManagerPolicy.screenTurningOff(mDisplayId, mPendingScreenOffUnblocker);
+                     unblockScreenOff();
+                 } else if (mPendingScreenOffUnblocker != null) {
+                     // Abort doing the state change until screen off is unblocked.
++                    return false;
++                }
++            }
++
++            if (!reportOnly && isOff && mDisplayId == Display.DEFAULT_DISPLAY) {
++                final com.android.server.neo2.Neo2SleepImageManagerInternal manager =
++                        LocalServices.getService(
++                                com.android.server.neo2.Neo2SleepImageManagerInternal.class);
++                final long delay = manager == null ? 0 : manager.defaultDisplayOffDelayMillis();
++                mNeo2SleepImagePowerOffPending = delay > 0;
++                mHandler.removeCallbacks(mNeo2SleepImagePowerOffRetry);
++                if (mNeo2SleepImagePowerOffPending) {
++                    mHandler.postDelayed(mNeo2SleepImagePowerOffRetry, delay);
+                     return false;
+                 }
+             }
+@@ -2269,6 +2292,12 @@
+ 
+             // We told policy already that screen was turning off, but now we changed our minds.
+             // Complete the full state transition on -> turningOff -> off.
++            if (mDisplayId == Display.DEFAULT_DISPLAY) {
++                final com.android.server.neo2.Neo2SleepImageManagerInternal manager =
++                        LocalServices.getService(
++                                com.android.server.neo2.Neo2SleepImageManagerInternal.class);
++                if (manager != null) manager.cancelDefaultDisplayOff();
++            }
+             unblockScreenOff();
+             mWindowManagerPolicy.screenTurnedOff(mDisplayId, mIsInTransition);
+             setReportedScreenState(REPORTED_TO_POLICY_SCREEN_OFF);
+@@ -2352,6 +2381,16 @@
+     }
+ 
+     private void animateScreenStateChange(int target, boolean performScreenOffTransition) {
++        // A quick wake cancels the pending OFF and its retry; no stale timeout may power off
++        // a later ON request. Keep the policy's existing turning-off cancellation below.
++        if (target != Display.STATE_OFF && mNeo2SleepImagePowerOffPending) {
++            mNeo2SleepImagePowerOffPending = false;
++            mHandler.removeCallbacks(mNeo2SleepImagePowerOffRetry);
++            final com.android.server.neo2.Neo2SleepImageManagerInternal manager =
++                    LocalServices.getService(
++                            com.android.server.neo2.Neo2SleepImageManagerInternal.class);
++            if (manager != null) manager.cancelDefaultDisplayOff();
++        }
+         // If there is already an animation in progress, don't interfere with it.
+         if (mColorFadeEnabled
+                 && (mColorFadeOnAnimator.isStarted() || mColorFadeOffAnimator.isStarted())) {
+diff --git a/services/core/java/com/android/server/display/DisplayPowerController2.java b/services/core/java/com/android/server/display/DisplayPowerController2.java
+--- a/services/core/java/com/android/server/display/DisplayPowerController2.java
++++ b/services/core/java/com/android/server/display/DisplayPowerController2.java
+@@ -326,6 +326,8 @@
+     // we are waiting for a callback to release it and unblock the screen.
+     private ScreenOnUnblocker mPendingScreenOnUnblocker;
+     private ScreenOffUnblocker mPendingScreenOffUnblocker;
++    private boolean mNeo2SleepImagePowerOffPending;
++    private final Runnable mNeo2SleepImagePowerOffRetry = this::sendUpdatePowerState;
+ 
+     // True if we were in the process of turning off the screen.
+     // This allows us to recover more gracefully from situations where we abort
+@@ -1641,7 +1643,8 @@
+         // Note that we do not wait for the brightness ramp animation to complete before
+         // reporting the display is ready because we only need to ensure the screen is in the
+         // right power state even as it continues to converge on the desired brightness.
+-        final boolean ready = mPendingScreenOnUnblocker == null
++        final boolean ready = !mNeo2SleepImagePowerOffPending
++                && mPendingScreenOnUnblocker == null
+                 && (!mColorFadeEnabled || (!mColorFadeOnAnimator.isStarted()
+                         && !mColorFadeOffAnimator.isStarted()))
+                 && mPowerState.waitUntilClean(mCleanListener);
+@@ -1878,12 +1881,32 @@
+             if (isOff && !mDisplayPowerProximityStateController.isScreenOffBecauseOfProximity()) {
+                 if (mReportedScreenStateToPolicy == REPORTED_TO_POLICY_SCREEN_ON
+                         || mReportedScreenStateToPolicy == REPORTED_TO_POLICY_UNREPORTED) {
++                    if (!reportOnly && mDisplayId == Display.DEFAULT_DISPLAY
++                            && mReportedScreenStateToPolicy == REPORTED_TO_POLICY_SCREEN_ON) {
++                        final com.android.server.neo2.Neo2SleepImageManagerInternal manager =
++                                LocalServices.getService(
++                                        com.android.server.neo2.Neo2SleepImageManagerInternal.class);
++                        if (manager != null) manager.beginDefaultDisplayOff();
++                    }
+                     setReportedScreenState(REPORTED_TO_POLICY_SCREEN_TURNING_OFF);
+                     blockScreenOff();
+                     mWindowManagerPolicy.screenTurningOff(mDisplayId, mPendingScreenOffUnblocker);
+                     unblockScreenOff();
+                 } else if (mPendingScreenOffUnblocker != null) {
+                     // Abort doing the state change until screen off is unblocked.
++                    return false;
++                }
++            }
++
++            if (!reportOnly && isOff && mDisplayId == Display.DEFAULT_DISPLAY) {
++                final com.android.server.neo2.Neo2SleepImageManagerInternal manager =
++                        LocalServices.getService(
++                                com.android.server.neo2.Neo2SleepImageManagerInternal.class);
++                final long delay = manager == null ? 0 : manager.defaultDisplayOffDelayMillis();
++                mNeo2SleepImagePowerOffPending = delay > 0;
++                mHandler.removeCallbacks(mNeo2SleepImagePowerOffRetry);
++                if (mNeo2SleepImagePowerOffPending) {
++                    mHandler.postDelayed(mNeo2SleepImagePowerOffRetry, delay);
+                     return false;
+                 }
+             }
+@@ -1915,6 +1938,12 @@
+ 
+             // We told policy already that screen was turning off, but now we changed our minds.
+             // Complete the full state transition on -> turningOff -> off.
++            if (mDisplayId == Display.DEFAULT_DISPLAY) {
++                final com.android.server.neo2.Neo2SleepImageManagerInternal manager =
++                        LocalServices.getService(
++                                com.android.server.neo2.Neo2SleepImageManagerInternal.class);
++                if (manager != null) manager.cancelDefaultDisplayOff();
++            }
+             unblockScreenOff();
+             mWindowManagerPolicy.screenTurnedOff(mDisplayId, mIsInTransition);
+             setReportedScreenState(REPORTED_TO_POLICY_SCREEN_OFF);
+@@ -1978,6 +2007,16 @@
+     }
+ 
+     private void animateScreenStateChange(int target, boolean performScreenOffTransition) {
++        // A quick wake cancels the pending OFF and its retry; no stale timeout may power off
++        // a later ON request. Keep the policy's existing turning-off cancellation below.
++        if (target != Display.STATE_OFF && mNeo2SleepImagePowerOffPending) {
++            mNeo2SleepImagePowerOffPending = false;
++            mHandler.removeCallbacks(mNeo2SleepImagePowerOffRetry);
++            final com.android.server.neo2.Neo2SleepImageManagerInternal manager =
++                    LocalServices.getService(
++                            com.android.server.neo2.Neo2SleepImageManagerInternal.class);
++            if (manager != null) manager.cancelDefaultDisplayOff();
++        }
+         // If there is already an animation in progress, don't interfere with it.
+         if (mColorFadeEnabled
+                 && (mColorFadeOnAnimator.isStarted() || mColorFadeOffAnimator.isStarted())) {
+diff --git a/core/java/android/neo2/INeo2FrontLightManager.aidl b/core/java/android/neo2/INeo2FrontLightManager.aidl
+new file mode 100644
+--- /dev/null
++++ b/core/java/android/neo2/INeo2FrontLightManager.aidl
+@@ -0,0 +1,17 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ */
++
++package android.neo2;
++
++/** @hide */
++interface INeo2FrontLightManager {
++    int submitManualRequest(int brightnessPercent, int warmthPercent);
++    int submitBrightnessRequest(int brightnessPercent);
++    int setEnabled(boolean enabled);
++    int[] getState();
++    int submitWarmthRequest(int warmthPercent);
++}
+diff --git a/core/java/android/neo2/Neo2FrontLightManager.java b/core/java/android/neo2/Neo2FrontLightManager.java
+new file mode 100644
+--- /dev/null
++++ b/core/java/android/neo2/Neo2FrontLightManager.java
+@@ -0,0 +1,111 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ */
++
++package android.neo2;
++
++import android.annotation.Nullable;
++import android.annotation.SuppressLint;
++import android.os.IBinder;
++import android.os.RemoteException;
++import android.os.ServiceManager;
++
++/**
++ * Private Neo2 front-light mediator client.
++ *
++ * @hide
++ */
++@SuppressLint("UnflaggedApi")
++public final class Neo2FrontLightManager {
++    public static final String SERVICE_NAME = "neo2_frontlight";
++    public static final int RESULT_QUEUED = 7;
++    public static final int RESULT_UNAVAILABLE = 3;
++
++    private static final int STATE_ENABLED = 0;
++    private static final int STATE_BRIGHTNESS = 1;
++    private static final int STATE_WARMTH = 2;
++    private static final int STATE_SIZE = 3;
++
++    private final INeo2FrontLightManager mService;
++
++    private Neo2FrontLightManager(INeo2FrontLightManager service) {
++        mService = service;
++    }
++
++    @SuppressLint("ManagerLookup")
++    @Nullable
++    public static Neo2FrontLightManager connect() {
++        IBinder binder = ServiceManager.getService(SERVICE_NAME);
++        if (binder == null) return null;
++        return new Neo2FrontLightManager(INeo2FrontLightManager.Stub.asInterface(binder));
++    }
++
++    public int submitManualRequest(int brightnessPercent, int warmthPercent) {
++        try {
++            return mService.submitManualRequest(brightnessPercent, warmthPercent);
++        } catch (RemoteException e) {
++            return RESULT_UNAVAILABLE;
++        }
++    }
++
++    /** Changes brightness while preserving the manager-owned accepted warmth. */
++    public int submitBrightnessRequest(int brightnessPercent) {
++        try {
++            return mService.submitBrightnessRequest(brightnessPercent);
++        } catch (RemoteException e) {
++            return RESULT_UNAVAILABLE;
++        }
++    }
++
++    /** Changes warmth without replacing the manager-owned brightness. */
++    public int submitWarmthRequest(int warmthPercent) {
++        try {
++            return mService.submitWarmthRequest(warmthPercent);
++        } catch (RemoteException e) {
++            return RESULT_UNAVAILABLE;
++        }
++    }
++
++    /** Enables or disables the front light without discarding the last nonzero pair. */
++    public int setEnabled(boolean enabled) {
++        try {
++            return mService.setEnabled(enabled);
++        } catch (RemoteException e) {
++            return RESULT_UNAVAILABLE;
++        }
++    }
++
++    /** Returns manager-owned desired state. This is not hardware readback. */
++    public State getState() {
++        try {
++            int[] state = mService.getState();
++            if (state == null || state.length != STATE_SIZE) return State.unavailable();
++            return new State(true, state[STATE_ENABLED] != 0,
++                    state[STATE_BRIGHTNESS], state[STATE_WARMTH]);
++        } catch (RemoteException e) {
++            return State.unavailable();
++        }
++    }
++
++    /** Immutable, redacted desired state exposed to trusted native surfaces. */
++    public static final class State {
++        public final boolean available;
++        public final boolean enabled;
++        public final int brightness;
++        public final int warmth;
++
++        public State(boolean available, boolean enabled, int brightness, int warmth) {
++            this.available = available;
++            this.enabled = enabled;
++            this.brightness = brightness;
++            this.warmth = warmth;
++        }
++
++        private static State unavailable() {
++            return new State(false, false, 50, 50);
++        }
++    }
++}
+diff --git a/services/core/java/com/android/server/neo2/Neo2FrontLightManagerService.java b/services/core/java/com/android/server/neo2/Neo2FrontLightManagerService.java
+new file mode 100644
+--- /dev/null
++++ b/services/core/java/com/android/server/neo2/Neo2FrontLightManagerService.java
+@@ -0,0 +1,548 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ */
++
++package com.android.server.neo2;
++
++import android.content.Context;
++import android.database.ContentObserver;
++import android.hardware.display.DisplayManager;
++import android.net.Uri;
++import android.neo2.INeo2FrontLightManager;
++import android.neo2.Neo2FrontLightManager;
++import android.os.Handler;
++import android.os.HandlerThread;
++import android.os.Binder;
++import android.os.IBinder;
++import android.os.Parcel;
++import android.os.Process;
++import android.os.RemoteException;
++import android.os.ServiceManager;
++import android.os.UserHandle;
++import android.provider.Settings;
++import android.util.Slog;
++import android.view.Display;
++
++import com.android.server.SystemService;
++
++import java.util.concurrent.atomic.AtomicLong;
++
++/**
++ * Sole front-light client for Neo2. Desired state is persistent, all mutation
++ * is serialized on one worker thread, and no value is presented as hardware
++ * readback.
++ */
++public final class Neo2FrontLightManagerService extends SystemService {
++    private static final String TAG = "Neo2FrontLightManager";
++    private static final String CONTROL_SERVICE = "neo2_frontlight_controls";
++    private static final String CONTROL_DESCRIPTOR = "org.neo2.controls.IFrontLightControl";
++    private static final String CONTROL_PERMISSION =
++            "org.neo2.controls.permission.CONTROL_FRONTLIGHT";
++    private static final int CONTROL_TRANSACTION = IBinder.FIRST_CALL_TRANSACTION;
++    private static final int RESULT_APPLIED = 0;
++    private static final int RESULT_CAPPED = 1;
++    private static final int RESULT_OFF = 2;
++    private static final int RESULT_UNAVAILABLE = 3;
++    private static final int RESULT_REJECTED = 4;
++    private static final int RESULT_FAILED = 5;
++    private static final int RESULT_FAILURE_LATCHED = 6;
++    // Private same-build signal that avoids extending the core Binder ABI.
++    private static final int PRESERVE_MANAGER_BRIGHTNESS = -1;
++    static final int INITIAL_BRIGHTNESS = 50;
++    static final int INITIAL_WARMTH = 50;
++    private static final String INITIALIZATION_MARKER =
++            "neo2_quiet_reader_frontlight_initialized";
++    private static final String STATE_PRESENT = "neo2_frontlight_state_present";
++    private static final String STATE_ENABLED = "neo2_frontlight_enabled";
++    private static final String STATE_BRIGHTNESS = "neo2_frontlight_brightness";
++    private static final String STATE_WARMTH = "neo2_frontlight_warmth";
++    private static final String STATE_LAST_BRIGHTNESS = "neo2_frontlight_last_brightness";
++    private static final String STATE_LAST_WARMTH = "neo2_frontlight_last_warmth";
++
++    private final HandlerThread mWorkerThread = new HandlerThread(TAG);
++    private final Handler mHandler;
++    private final DisplayManager mDisplayManager;
++    private final AtomicLong mLatestGeneration = new AtomicLong();
++    private long mScreenEpoch;
++    private long mCompletedOffEpoch = -1;
++    private boolean mDisplayOn;
++    private boolean mSetupComplete;
++    private boolean mStateLoaded;
++    private boolean mWakeRestorePending;
++    private boolean mDrainScheduled;
++    private Request mPending;
++    private boolean mEnabled = true;
++    private int mDesiredBrightness = INITIAL_BRIGHTNESS;
++    private int mDesiredWarmth = INITIAL_WARMTH;
++    private int mLastBrightness = INITIAL_BRIGHTNESS;
++    private int mLastWarmth = INITIAL_WARMTH;
++    private volatile PublishedState mPublishedState =
++            new PublishedState(true, INITIAL_BRIGHTNESS, INITIAL_WARMTH);
++    private final InitializationTracker mInitialization = new InitializationTracker();
++    private final ContentObserver mSetupObserver;
++
++    public Neo2FrontLightManagerService(Context context) {
++        super(context);
++        mWorkerThread.start();
++        mHandler = new Handler(mWorkerThread.getLooper());
++        mDisplayManager = context.getSystemService(DisplayManager.class);
++        mSetupObserver = new ContentObserver(mHandler) {
++            @Override
++            public void onChange(boolean selfChange, Uri uri) {
++                handleSetupStateChanged();
++            }
++        };
++    }
++
++    @Override
++    public void onStart() {
++        publishBinderService(Neo2FrontLightManager.SERVICE_NAME, new BinderService());
++    }
++
++    @Override
++    public void onBootPhase(int phase) {
++        if (phase != SystemService.PHASE_SYSTEM_SERVICES_READY) {
++            return;
++        }
++        getContext().getContentResolver().registerContentObserver(
++                Settings.Secure.getUriFor(Settings.Secure.USER_SETUP_COMPLETE), false,
++                mSetupObserver, UserHandle.USER_SYSTEM);
++        mDisplayManager.registerDisplayListener(
++                mDisplayListener, mHandler);
++        mHandler.post(this::loadState);
++    }
++
++    private final DisplayManager.DisplayListener mDisplayListener =
++            new DisplayManager.DisplayListener() {
++        @Override
++        public void onDisplayAdded(int displayId) {}
++
++        @Override
++        public void onDisplayRemoved(int displayId) {}
++
++        @Override
++        public void onDisplayChanged(int displayId) {
++            if (displayId != Display.DEFAULT_DISPLAY) return;
++            handleDisplayState(readDisplayOn());
++        }
++    };
++
++    private final class BinderService extends INeo2FrontLightManager.Stub {
++        @Override
++        public int submitManualRequest(int brightnessPercent, int warmthPercent) {
++            enforceManagerAccess();
++            if (brightnessPercent == PRESERVE_MANAGER_BRIGHTNESS) {
++                if (!isPercent(warmthPercent)) return RESULT_REJECTED;
++                long generation = mLatestGeneration.incrementAndGet();
++                mHandler.post(() -> queueWarmth(generation, warmthPercent));
++                return Neo2FrontLightManager.RESULT_QUEUED;
++            }
++            if (!isPercent(brightnessPercent) || !isPercent(warmthPercent)) {
++                return RESULT_REJECTED;
++            }
++            long generation = mLatestGeneration.incrementAndGet();
++            mHandler.post(() -> queueManual(generation, brightnessPercent, warmthPercent));
++            return Neo2FrontLightManager.RESULT_QUEUED;
++        }
++
++        @Override
++        public int submitBrightnessRequest(int brightnessPercent) {
++            enforceManagerAccess();
++            if (!isPercent(brightnessPercent)) return RESULT_REJECTED;
++            long generation = mLatestGeneration.incrementAndGet();
++            mHandler.post(() -> queueBrightness(generation, brightnessPercent));
++            return Neo2FrontLightManager.RESULT_QUEUED;
++        }
++
++        @Override
++        public int submitWarmthRequest(int warmthPercent) {
++            enforceManagerAccess();
++            if (!isPercent(warmthPercent)) return RESULT_REJECTED;
++            long generation = mLatestGeneration.incrementAndGet();
++            mHandler.post(() -> queueWarmth(generation, warmthPercent));
++            return Neo2FrontLightManager.RESULT_QUEUED;
++        }
++
++        @Override
++        public int setEnabled(boolean enabled) {
++            enforceManagerAccess();
++            long generation = mLatestGeneration.incrementAndGet();
++            mHandler.post(() -> queueEnabled(generation, enabled));
++            return Neo2FrontLightManager.RESULT_QUEUED;
++        }
++
++        @Override
++        public int[] getState() {
++            enforceManagerAccess();
++            return mPublishedState.toArray();
++        }
++
++        private void enforceManagerAccess() {
++            if (Binder.getCallingUid() != Process.SYSTEM_UID) {
++                getContext().enforceCallingOrSelfPermission(CONTROL_PERMISSION, TAG);
++            }
++        }
++    }
++
++    private void queueManual(long generation, int brightness, int warmth) {
++        if (generation != mLatestGeneration.get()) return;
++        updateDesired(brightness, warmth);
++        queueDesiredOrOff(generation, Request.KIND_MANUAL);
++    }
++
++    private void queueBrightness(long generation, int brightness) {
++        if (generation != mLatestGeneration.get()) return;
++        Request request = nativeBrightnessRequest(generation, brightness, mDesiredWarmth);
++        updateDesired(request.brightness, request.warmth);
++        queueDesiredOrOff(generation, Request.KIND_BRIGHTNESS);
++    }
++
++    private void queueWarmth(long generation, int warmth) {
++        if (generation != mLatestGeneration.get()) return;
++        Request request = nativeWarmthRequest(generation, warmth, mDesiredBrightness);
++        updateDesired(request.brightness, request.warmth);
++        queueDesiredOrOff(generation, Request.KIND_WARMTH);
++    }
++
++    private void queueEnabled(long generation, boolean enabled) {
++        if (generation != mLatestGeneration.get()) return;
++        mEnabled = enabled;
++        persistState();
++        publishState();
++        queueDesiredOrOff(generation, Request.KIND_MANUAL);
++    }
++
++    private void updateDesired(int brightness, int warmth) {
++        if (brightness > 0) {
++            mEnabled = true;
++            mDesiredBrightness = brightness;
++            mDesiredWarmth = warmth;
++            mLastBrightness = brightness;
++            mLastWarmth = warmth;
++        } else {
++            mEnabled = false;
++        }
++        persistState();
++        publishState();
++    }
++
++    private void queueDesiredOrOff(long generation, int kind) {
++        if (!mStateLoaded || !mSetupComplete) return;
++        mPending = selectPhysicalRequest(generation, kind, mDisplayOn,
++                mCompletedOffEpoch == mScreenEpoch, mWakeRestorePending, mEnabled,
++                mDesiredBrightness, mDesiredWarmth, mScreenEpoch);
++        if (mPending == null) return;
++        scheduleDrain();
++    }
++
++    static Request selectPhysicalRequest(long generation, int kind, boolean displayOn,
++            boolean offCompleted, boolean wakeRestorePending, boolean enabled,
++            int brightness, int warmth, long epoch) {
++        if (!displayOn && offCompleted) return null;
++        if (!displayOn || wakeRestorePending || !enabled) {
++            return Request.off(generation, epoch);
++        }
++        return Request.user(kind, generation, brightness, warmth);
++    }
++
++    /** Native brightness preserves the manager-owned warmth read on the serialized handler. */
++    static Request nativeBrightnessRequest(long generation, int brightness, int acceptedWarmth) {
++        return Request.brightness(generation, brightness, acceptedWarmth);
++    }
++
++    /** Native warmth preserves the manager-owned brightness read on the serialized handler. */
++    static Request nativeWarmthRequest(long generation, int warmth, int acceptedBrightness) {
++        return Request.warmth(generation, acceptedBrightness, warmth);
++    }
++
++    private void loadState() {
++        boolean present = getSecureInt(STATE_PRESENT, 0) != 0;
++        if (present) {
++            mEnabled = getSecureInt(STATE_ENABLED, 1) != 0;
++            mDesiredBrightness = sanitizeNonzero(
++                    getSecureInt(STATE_BRIGHTNESS, INITIAL_BRIGHTNESS), INITIAL_BRIGHTNESS);
++            mDesiredWarmth = sanitizePercent(
++                    getSecureInt(STATE_WARMTH, INITIAL_WARMTH), INITIAL_WARMTH);
++            mLastBrightness = sanitizeNonzero(
++                    getSecureInt(STATE_LAST_BRIGHTNESS, mDesiredBrightness), mDesiredBrightness);
++            mLastWarmth = sanitizePercent(
++                    getSecureInt(STATE_LAST_WARMTH, mDesiredWarmth), mDesiredWarmth);
++        }
++        mInitialization.loadConsumed(Settings.Secure.getIntForUser(
++                getContext().getContentResolver(), INITIALIZATION_MARKER, 0,
++                UserHandle.USER_SYSTEM) != 0);
++        mDisplayOn = readDisplayOn();
++        mStateLoaded = true;
++        publishState();
++        persistState();
++        handleSetupStateChanged();
++    }
++
++    private void handleSetupStateChanged() {
++        if (!mStateLoaded || mSetupComplete || getSecureInt(
++                Settings.Secure.USER_SETUP_COMPLETE, 0) == 0) return;
++        mSetupComplete = true;
++        long generation = mLatestGeneration.incrementAndGet();
++        mInitialization.begin(generation);
++        queueDesiredOrOff(generation, Request.KIND_INITIALIZATION);
++    }
++
++    private void handleDisplayState(boolean displayOn) {
++        if (!mStateLoaded || displayOn == mDisplayOn) return;
++        if (displayOn) {
++            handleDisplayOn();
++        } else {
++            handleDisplayOff();
++        }
++    }
++
++    private void handleDisplayOff() {
++        mDisplayOn = false;
++        mWakeRestorePending = false;
++        mCompletedOffEpoch = -1;
++        mScreenEpoch++;
++        mPending = Request.off(mLatestGeneration.incrementAndGet(), mScreenEpoch);
++        scheduleDrain();
++    }
++
++    private void handleDisplayOn() {
++        mDisplayOn = true;
++        if (!mSetupComplete) return;
++        if (mCompletedOffEpoch == mScreenEpoch) {
++            queueDesired();
++        } else {
++            mWakeRestorePending = true;
++        }
++    }
++
++    private void queueDesired() {
++        mWakeRestorePending = false;
++        long generation = mLatestGeneration.incrementAndGet();
++        mPending = mEnabled
++                ? Request.restore(generation, mDesiredBrightness, mDesiredWarmth)
++                : Request.off(generation, mScreenEpoch);
++        scheduleDrain();
++    }
++
++    private void scheduleDrain() {
++        if (mDrainScheduled) return;
++        mDrainScheduled = true;
++        mHandler.post(this::drainOne);
++    }
++
++    private void drainOne() {
++        Request request = mPending;
++        mPending = null;
++        if (request == null) {
++            mDrainScheduled = false;
++            return;
++        }
++        if (request.generation != mLatestGeneration.get()) {
++            continueDrain();
++            return;
++        }
++        int result = invokeCalibratedService(request.brightness, request.warmth);
++        if (request.generation == mLatestGeneration.get()) {
++            consumeCurrentResult(request, result);
++        }
++        continueDrain();
++    }
++
++    private void continueDrain() {
++        if (mPending != null) mHandler.post(this::drainOne);
++        else mDrainScheduled = false;
++    }
++
++    private void consumeCurrentResult(Request request, int result) {
++        boolean successful = result == RESULT_APPLIED || result == RESULT_CAPPED
++                || result == RESULT_OFF;
++        boolean consumed = request.kind == Request.KIND_INITIALIZATION
++                ? mInitialization.finishInitialization(
++                        request.generation, mLatestGeneration.get(), successful)
++                : (request.kind == Request.KIND_MANUAL || request.kind == Request.KIND_BRIGHTNESS
++                        || request.kind == Request.KIND_WARMTH)
++                        && mInitialization.finishUserRequest(
++                                request.generation, mLatestGeneration.get(), successful);
++        if (consumed && !Settings.Secure.putIntForUser(getContext().getContentResolver(),
++                INITIALIZATION_MARKER, 1, UserHandle.USER_SYSTEM)) {
++            Slog.w(TAG, "Unable to persist quiet-reader initialization marker");
++        }
++        if (request.kind == Request.KIND_OFF) {
++            if (result == RESULT_OFF) {
++                mCompletedOffEpoch = request.epoch;
++                if (mWakeRestorePending && mDisplayOn) queueDesired();
++            } else {
++                mWakeRestorePending = false;
++            }
++            return;
++        }
++        if (successful && request.kind == Request.KIND_INITIALIZATION) persistState();
++    }
++
++    private int invokeCalibratedService(int brightness, int warmth) {
++        IBinder service = ServiceManager.getService(CONTROL_SERVICE);
++        if (service == null) return RESULT_UNAVAILABLE;
++        Parcel data = Parcel.obtain();
++        Parcel reply = Parcel.obtain();
++        try {
++            data.writeInterfaceToken(CONTROL_DESCRIPTOR);
++            data.writeInt(brightness);
++            data.writeInt(warmth);
++            if (!service.transact(CONTROL_TRANSACTION, data, reply, 0)) return RESULT_FAILED;
++            reply.readException();
++            return reply.readInt();
++        } catch (RemoteException | RuntimeException e) {
++            Slog.w(TAG, "Calibrated front-light request failed", e);
++            return RESULT_FAILED;
++        } finally {
++            reply.recycle();
++            data.recycle();
++        }
++    }
++
++    private boolean readDisplayOn() {
++        Display display = mDisplayManager.getDisplay(Display.DEFAULT_DISPLAY);
++        return display != null && display.getState() == Display.STATE_ON;
++    }
++
++    private int getSecureInt(String key, int defaultValue) {
++        return Settings.Secure.getIntForUser(getContext().getContentResolver(), key,
++                defaultValue, UserHandle.USER_SYSTEM);
++    }
++
++    private void persistState() {
++        boolean success = putSecureInt(STATE_ENABLED, mEnabled ? 1 : 0)
++                & putSecureInt(STATE_BRIGHTNESS, mDesiredBrightness)
++                & putSecureInt(STATE_WARMTH, mDesiredWarmth)
++                & putSecureInt(STATE_LAST_BRIGHTNESS, mLastBrightness)
++                & putSecureInt(STATE_LAST_WARMTH, mLastWarmth)
++                & putSecureInt(STATE_PRESENT, 1);
++        if (!success) Slog.w(TAG, "Unable to persist desired front-light state");
++    }
++
++    private boolean putSecureInt(String key, int value) {
++        return Settings.Secure.putIntForUser(getContext().getContentResolver(), key, value,
++                UserHandle.USER_SYSTEM);
++    }
++
++    private void publishState() {
++        mPublishedState = new PublishedState(mEnabled,
++                mEnabled ? mDesiredBrightness : mLastBrightness,
++                mEnabled ? mDesiredWarmth : mLastWarmth);
++    }
++
++    private static int sanitizePercent(int value, int fallback) {
++        return isPercent(value) ? value : fallback;
++    }
++
++    private static int sanitizeNonzero(int value, int fallback) {
++        return value >= 1 && value <= 100 ? value : fallback;
++    }
++
++    private static boolean isPercent(int value) {
++        return value >= 0 && value <= 100;
++    }
++
++    static final class PublishedState {
++        final boolean enabled;
++        final int brightness;
++        final int warmth;
++
++        PublishedState(boolean enabled, int brightness, int warmth) {
++            this.enabled = enabled;
++            this.brightness = brightness;
++            this.warmth = warmth;
++        }
++
++        int[] toArray() {
++            return new int[] {enabled ? 1 : 0, brightness, warmth};
++        }
++    }
++
++    static final class Request {
++        static final int KIND_MANUAL = 0;
++        static final int KIND_BRIGHTNESS = 1;
++        static final int KIND_OFF = 2;
++        static final int KIND_RESTORE = 3;
++        static final int KIND_INITIALIZATION = 4;
++        static final int KIND_WARMTH = 5;
++        final int kind;
++        final long generation;
++        final long epoch;
++        final int brightness;
++        final int warmth;
++
++        private Request(int kind, long generation, long epoch, int brightness, int warmth) {
++            this.kind = kind;
++            this.generation = generation;
++            this.epoch = epoch;
++            this.brightness = brightness;
++            this.warmth = warmth;
++        }
++
++        static Request manual(long generation, int brightness, int warmth) {
++            return new Request(KIND_MANUAL, generation, -1, brightness, warmth);
++        }
++
++        static Request brightness(long generation, int brightness, int warmth) {
++            return new Request(KIND_BRIGHTNESS, generation, -1, brightness, warmth);
++        }
++
++        static Request warmth(long generation, int brightness, int warmth) {
++            return new Request(KIND_WARMTH, generation, -1, brightness, warmth);
++        }
++
++        static Request user(int kind, long generation, int brightness, int warmth) {
++            return new Request(kind, generation, -1, brightness, warmth);
++        }
++
++        static Request off(long generation, long epoch) {
++            return new Request(KIND_OFF, generation, epoch, 0, 0);
++        }
++
++        static Request restore(long generation, int brightness, int warmth) {
++            return new Request(KIND_RESTORE, generation, -1, brightness, warmth);
++        }
++
++        static Request initialization(long generation, int brightness, int warmth) {
++            return new Request(KIND_INITIALIZATION, generation, -1, brightness, warmth);
++        }
++    }
++
++    static final class InitializationTracker {
++        private boolean mLoaded;
++        private boolean mAttempted;
++        private boolean mConsumed;
++        private long mInitializationGeneration = -1;
++
++        void loadConsumed(boolean consumed) {
++            mLoaded = true;
++            mConsumed = consumed;
++        }
++
++        boolean begin(long generation) {
++            if (!mLoaded || mAttempted || mConsumed) return false;
++            mAttempted = true;
++            mInitializationGeneration = generation;
++            return true;
++        }
++
++        boolean finishInitialization(long generation, long currentGeneration, boolean success) {
++            if (mConsumed || !success || generation != currentGeneration
++                    || generation != mInitializationGeneration) {
++                return false;
++            }
++            mConsumed = true;
++            return true;
++        }
++
++        boolean finishUserRequest(long generation, long currentGeneration, boolean success) {
++            if (mConsumed || !success || generation != currentGeneration) return false;
++            mConsumed = true;
++            return true;
++        }
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/qs/tiles/Neo2FrontLightTile.java b/packages/SystemUI/src/com/android/systemui/qs/tiles/Neo2FrontLightTile.java
+new file mode 100644
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/qs/tiles/Neo2FrontLightTile.java
+@@ -0,0 +1,126 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ */
++
++package com.android.systemui.qs.tiles;
++
++import android.content.Intent;
++import android.neo2.Neo2FrontLightManager;
++import android.os.Handler;
++import android.os.Looper;
++import android.service.quicksettings.Tile;
++import android.widget.Switch;
++
++import androidx.annotation.Nullable;
++
++import com.android.internal.logging.MetricsLogger;
++import android.view.View;
++import com.android.systemui.dagger.qualifiers.Background;
++import com.android.systemui.dagger.qualifiers.Main;
++import com.android.systemui.plugins.ActivityStarter;
++import com.android.systemui.plugins.FalsingManager;
++import com.android.systemui.plugins.qs.QSTile;
++import com.android.systemui.plugins.statusbar.StatusBarStateController;
++import com.android.systemui.qs.QSHost;
++import com.android.systemui.qs.QsEventLogger;
++import com.android.systemui.qs.logging.QSLogger;
++import com.android.systemui.qs.tileimpl.QSTileImpl;
++import com.android.systemui.R;
++
++import javax.inject.Inject;
++
++/** Quick Settings tile for the manager-owned Neo2 front light. */
++public final class Neo2FrontLightTile extends QSTileImpl<QSTile.BooleanState> {
++    public static final String TILE_SPEC = "frontlight";
++    private static final long REQUEST_REFRESH_MILLIS = 50;
++
++    @Nullable private final Neo2FrontLightManager mManager;
++    private final Handler mMainHandler;
++
++    @Inject
++    public Neo2FrontLightTile(
++            QSHost host,
++            QsEventLogger uiEventLogger,
++            @Background Looper backgroundLooper,
++            @Main Handler mainHandler,
++            FalsingManager falsingManager,
++            MetricsLogger metricsLogger,
++            StatusBarStateController statusBarStateController,
++            ActivityStarter activityStarter,
++            QSLogger qsLogger) {
++        super(host, uiEventLogger, backgroundLooper, mainHandler, falsingManager, metricsLogger,
++                statusBarStateController, activityStarter, qsLogger);
++        mManager = Neo2FrontLightManager.connect();
++        mMainHandler = mainHandler;
++    }
++
++    @Override
++    public boolean isAvailable() {
++        return mManager != null && mContext.getResources().getBoolean(
++                R.bool.config_neo2_use_frontlight_brightness_slider);
++    }
++
++    @Override
++    public BooleanState newTileState() {
++        return new BooleanState();
++    }
++
++    @Override
++    protected void handleClick(@Nullable View view) {
++        if (mManager == null) return;
++        Neo2FrontLightManager.State state = mManager.getState();
++        if (state.available) {
++            mManager.setEnabled(!state.enabled);
++            refreshState();
++            mMainHandler.postDelayed(this::refreshState, REQUEST_REFRESH_MILLIS);
++        }
++    }
++
++    @Override
++    public Intent getLongClickIntent() {
++        return new Intent(Intent.ACTION_SHOW_BRIGHTNESS_DIALOG)
++                .setPackage(mContext.getPackageName());
++    }
++
++    @Override
++    protected void handleUpdateState(BooleanState state, Object arg) {
++        Neo2FrontLightManager.State managerState =
++                mManager == null ? null : mManager.getState();
++        state.label = mContext.getString(R.string.neo2_frontlight_label);
++        state.expandedAccessibilityClassName = Switch.class.getName();
++        if (managerState == null || !managerState.available) {
++            state.value = false;
++            state.state = Tile.STATE_UNAVAILABLE;
++            state.secondaryLabel = null;
++            state.contentDescription = mContext.getString(
++                    R.string.neo2_frontlight_tile_content_description_unavailable);
++            state.icon = ResourceIcon.get(R.drawable.qs_nightlight_icon_off);
++            return;
++        }
++        boolean enabled = managerState.enabled;
++        state.value = enabled;
++        state.state = enabled ? Tile.STATE_ACTIVE : Tile.STATE_INACTIVE;
++        state.secondaryLabel = enabled
++                ? mContext.getString(R.string.neo2_frontlight_tile_summary,
++                        managerState.brightness, managerState.warmth)
++                : mContext.getString(R.string.neo2_frontlight_off);
++        state.contentDescription = mContext.getString(
++                R.string.neo2_frontlight_tile_content_description,
++                state.label, state.secondaryLabel);
++        state.icon = ResourceIcon.get(enabled
++                ? R.drawable.qs_nightlight_icon_on : R.drawable.qs_nightlight_icon_off);
++    }
++
++    @Override
++    public CharSequence getTileLabel() {
++        return mContext.getString(R.string.neo2_frontlight_label);
++    }
++
++    @Override
++    public int getMetricsCategory() {
++        return 0;
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/settings/brightness/Neo2FrontLightControlsView.java b/packages/SystemUI/src/com/android/systemui/settings/brightness/Neo2FrontLightControlsView.java
+new file mode 100644
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/settings/brightness/Neo2FrontLightControlsView.java
+@@ -0,0 +1,145 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ */
++package com.android.systemui.settings.brightness;
++
++import android.content.Context;
++import android.database.ContentObserver;
++import android.neo2.Neo2FrontLightManager;
++import android.os.Handler;
++import android.os.Looper;
++import android.os.UserHandle;
++import android.provider.Settings;
++import android.view.ViewGroup;
++import android.widget.LinearLayout;
++import android.widget.SeekBar;
++import android.widget.Switch;
++import android.widget.TextView;
++
++import com.android.systemui.R;
++
++/** Android 14 View equivalent of the Android 17 manager-backed QS controls. */
++public final class Neo2FrontLightControlsView extends LinearLayout {
++    private final Neo2FrontLightManager mManager = Neo2FrontLightManager.connect();
++    private final Handler mHandler = new Handler(Looper.getMainLooper());
++    private final Switch mEnabled;
++    private final SeekBar mBrightness;
++    private final SeekBar mWarmth;
++    private final TextView mBrightnessLabel;
++    private final TextView mWarmthLabel;
++    private boolean mRefreshing;
++    private boolean mDragging;
++    private final ContentObserver mObserver = new ContentObserver(mHandler) {
++        @Override public void onChange(boolean selfChange) { refresh(); }
++    };
++
++    public Neo2FrontLightControlsView(Context context) {
++        super(context);
++        setOrientation(VERTICAL);
++        int padding = dp(12);
++        setPadding(padding, padding, padding, padding);
++        setLayoutParams(new ViewGroup.LayoutParams(
++                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
++        mEnabled = new Switch(context);
++        mEnabled.setText(R.string.neo2_frontlight_label);
++        mEnabled.setMinHeight(dp(48));
++        addView(mEnabled);
++        mBrightnessLabel = new TextView(context);
++        addView(mBrightnessLabel);
++        mBrightness = slider(R.string.neo2_frontlight_brightness_label);
++        mWarmthLabel = new TextView(context);
++        addView(mWarmthLabel);
++        mWarmth = slider(R.string.neo2_frontlight_warmth_label);
++        mEnabled.setOnCheckedChangeListener((button, checked) -> {
++            if (!mRefreshing && mManager != null) {
++                mManager.setEnabled(checked);
++                mHandler.postDelayed(this::refresh, 50);
++            }
++        });
++        refresh();
++    }
++
++    private SeekBar slider(int label) {
++        SeekBar slider = new SeekBar(getContext());
++        slider.setMax(100);
++        slider.setMinimumHeight(dp(48));
++        slider.setContentDescription(getContext().getString(label));
++        addView(slider, new LayoutParams(LayoutParams.MATCH_PARENT, dp(48)));
++        slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
++            @Override public void onStartTrackingTouch(SeekBar bar) { mDragging = true; }
++            @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
++                if (fromUser) {
++                    updateLabels();
++                    // Accessibility/keyboard changes have no drag-stop callback.
++                    if (!mDragging) submit(bar);
++                }
++            }
++            @Override public void onStopTrackingTouch(SeekBar bar) {
++                mDragging = false;
++                submit(bar);
++            }
++        });
++        return slider;
++    }
++
++    private void submit(SeekBar bar) {
++        if (mManager == null) return;
++        if (bar == mBrightness) {
++            mManager.submitBrightnessRequest(bar.getProgress());
++        } else {
++            // Manager reads current brightness on its serialized worker.
++            mManager.submitWarmthRequest(bar.getProgress());
++        }
++        mHandler.postDelayed(this::refresh, 50);
++    }
++
++    private void updateLabels() {
++        mBrightnessLabel.setText(getContext().getString(
++                R.string.neo2_frontlight_value,
++                getContext().getString(R.string.neo2_frontlight_brightness_label),
++                mBrightness.getProgress()));
++        mWarmthLabel.setText(getContext().getString(
++                R.string.neo2_frontlight_value,
++                getContext().getString(R.string.neo2_frontlight_warmth_label),
++                mWarmth.getProgress()));
++    }
++
++    private void refresh() {
++        if (mDragging) return;
++        Neo2FrontLightManager.State state = mManager == null ? null : mManager.getState();
++        boolean available = state != null && state.available;
++        mRefreshing = true;
++        mEnabled.setEnabled(available);
++        mBrightness.setEnabled(available);
++        mWarmth.setEnabled(available);
++        if (available) {
++            mEnabled.setChecked(state.enabled);
++            mBrightness.setProgress(state.brightness);
++            mWarmth.setProgress(state.warmth);
++        }
++        updateLabels();
++        mRefreshing = false;
++    }
++
++    @Override protected void onAttachedToWindow() {
++        super.onAttachedToWindow();
++        for (String key : new String[] {"neo2_frontlight_enabled",
++                "neo2_frontlight_brightness", "neo2_frontlight_warmth"}) {
++            getContext().getContentResolver().registerContentObserver(
++                    Settings.Secure.getUriFor(key), false, mObserver, UserHandle.USER_SYSTEM);
++        }
++        refresh();
++    }
++
++    @Override protected void onDetachedFromWindow() {
++        getContext().getContentResolver().unregisterContentObserver(mObserver);
++        mHandler.removeCallbacksAndMessages(null);
++        super.onDetachedFromWindow();
++    }
++
++    private int dp(int value) {
++        return Math.round(value * getResources().getDisplayMetrics().density);
++    }
++}
+diff --git a/services/java/com/android/server/SystemServer.java b/services/java/com/android/server/SystemServer.java
+--- a/services/java/com/android/server/SystemServer.java
++++ b/services/java/com/android/server/SystemServer.java
+@@ -1549,3 +1549,5 @@
+             t.traceBegin("StartNeo2SleepImageManager");
+-            mSystemServiceManager.startService(Neo2SleepImageManagerService.class);
++            mSystemServiceManager.startService(Neo2SleepImageManagerService.class);
++            mSystemServiceManager.startService(
++                    com.android.server.neo2.Neo2FrontLightManagerService.class);
+             t.traceEnd();
+diff --git a/packages/SystemUI/src/com/android/systemui/qs/dagger/QSModule.java b/packages/SystemUI/src/com/android/systemui/qs/dagger/QSModule.java
+--- a/packages/SystemUI/src/com/android/systemui/qs/dagger/QSModule.java
++++ b/packages/SystemUI/src/com/android/systemui/qs/dagger/QSModule.java
+@@ -63,3 +63,8 @@
+ )
+-public interface QSModule {
++public interface QSModule {
++    @dagger.Binds
++    @dagger.multibindings.IntoMap
++    @dagger.multibindings.StringKey("frontlight")
++    QSTileImpl<?> bindNeo2FrontLightTile(
++            com.android.systemui.qs.tiles.Neo2FrontLightTile tile);
+ 
+diff --git a/packages/SystemUI/res/values/config.xml b/packages/SystemUI/res/values/config.xml
+--- a/packages/SystemUI/res/values/config.xml
++++ b/packages/SystemUI/res/values/config.xml
+@@ -78,6 +78,8 @@
+ 
+-    <!-- The default tiles to display in QuickSettings -->
+-    <string name="quick_settings_tiles_default" translatable="false">
+-        internet,bt,flashlight,dnd,alarm,airplane,controls,wallet,rotation,battery,cast,screenrecord,mictoggle,cameratoggle,custom(com.android.permissioncontroller/.permission.service.SafetyCenterQsTileService)
+-    </string>
++    <bool name="config_neo2_use_frontlight_brightness_slider">true</bool>
++
++    <!-- The default tiles to display in QuickSettings -->
++    <string name="quick_settings_tiles_default" translatable="false">
++        internet,frontlight,bt,flashlight,dnd,alarm,airplane,controls,wallet,rotation,battery,cast,screenrecord,mictoggle,cameratoggle,custom(com.android.permissioncontroller/.permission.service.SafetyCenterQsTileService)
++    </string>
+ 
+diff --git a/packages/SystemUI/res/values/strings.xml b/packages/SystemUI/res/values/strings.xml
+--- a/packages/SystemUI/res/values/strings.xml
++++ b/packages/SystemUI/res/values/strings.xml
+@@ -3152,2 +3152,10 @@
+     <string name="install_app">Install app</string>
+-</resources>
++    <string name="neo2_frontlight_label">Front light</string>
++    <string name="neo2_frontlight_brightness_label">Brightness</string>
++    <string name="neo2_frontlight_warmth_label">Cool — Warm</string>
++    <string name="neo2_frontlight_off">Off</string>
++    <string name="neo2_frontlight_tile_summary">%1$d%% brightness · %2$d%% warmth</string>
++    <string name="neo2_frontlight_tile_content_description">%1$s, %2$s</string>
++    <string name="neo2_frontlight_tile_content_description_unavailable">Front light unavailable</string>
++    <string name="neo2_frontlight_value">%1$s: %2$d%%</string>
++</resources>
+diff --git a/packages/SystemUI/src/com/android/systemui/settings/brightness/BrightnessDialog.java b/packages/SystemUI/src/com/android/systemui/settings/brightness/BrightnessDialog.java
+--- a/packages/SystemUI/src/com/android/systemui/settings/brightness/BrightnessDialog.java
++++ b/packages/SystemUI/src/com/android/systemui/settings/brightness/BrightnessDialog.java
+@@ -87,3 +87,7 @@
+ 
+-        setContentView(R.layout.brightness_mirror_container);
++        if (getResources().getBoolean(R.bool.config_neo2_use_frontlight_brightness_slider)) {
++            setContentView(new Neo2FrontLightControlsView(this));
++            return;
++        }
++        setContentView(R.layout.brightness_mirror_container);
+         FrameLayout frame = findViewById(R.id.brightness_mirror_container);
+@@ -118,3 +122,3 @@
+         super.onStart();
+-        mBrightnessController.registerCallbacks();
++        if (mBrightnessController != null) mBrightnessController.registerCallbacks();
+         MetricsLogger.visible(this, MetricsEvent.BRIGHTNESS_DIALOG);
+@@ -132,3 +136,3 @@
+         MetricsLogger.hidden(this, MetricsEvent.BRIGHTNESS_DIALOG);
+-        mBrightnessController.unregisterCallbacks();
++        if (mBrightnessController != null) mBrightnessController.unregisterCallbacks();
+     }
+diff --git a/packages/SystemUI/src/com/android/systemui/qs/QSPanelController.java b/packages/SystemUI/src/com/android/systemui/qs/QSPanelController.java
+--- a/packages/SystemUI/src/com/android/systemui/qs/QSPanelController.java
++++ b/packages/SystemUI/src/com/android/systemui/qs/QSPanelController.java
+@@ -90,3 +90,9 @@
+         mBrightnessSliderController = brightnessSliderFactory.create(getContext(), mView);
+-        mView.setBrightnessView(mBrightnessSliderController.getRootView());
++        if (getContext().getResources().getBoolean(
++                com.android.systemui.R.bool.config_neo2_use_frontlight_brightness_slider)) {
++            mView.setBrightnessView(new
++                    com.android.systemui.settings.brightness.Neo2FrontLightControlsView(getContext()));
++        } else {
++            mView.setBrightnessView(mBrightnessSliderController.getRootView());
++        }
+ 
+@@ -163,4 +169,5 @@
+         //expansion, so it will update the current brightness before the slider is visible.
+-        if (listening) {
+-            mBrightnessController.registerCallbacks();
++        if (listening && !getContext().getResources().getBoolean(
++                com.android.systemui.R.bool.config_neo2_use_frontlight_brightness_slider)) {
++            mBrightnessController.registerCallbacks();
+         } else {
+diff --git a/packages/SystemUI/AndroidManifest.xml b/packages/SystemUI/AndroidManifest.xml
+--- a/packages/SystemUI/AndroidManifest.xml
++++ b/packages/SystemUI/AndroidManifest.xml
+@@ -26,3 +26,4 @@
+     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
++    <uses-permission android:name="org.neo2.controls.permission.CONTROL_FRONTLIGHT" />
+ 
+     <!-- Used to read wallpaper -->
+diff --git a/packages/SystemUI/src/com/android/systemui/qs/QSAnimator.java b/packages/SystemUI/src/com/android/systemui/qs/QSAnimator.java
+--- a/packages/SystemUI/src/com/android/systemui/qs/QSAnimator.java
++++ b/packages/SystemUI/src/com/android/systemui/qs/QSAnimator.java
+@@ -555,5 +555,12 @@
+     private void animateBrightnessSlider() {
+         mBrightnessTranslationAnimator = null;
+         mBrightnessOpacityAnimator = null;
+         View qsBrightness = mQsPanelController.getBrightnessView();
++        // The paired frontlight controls are not a BrightnessSliderView and do
++        // not expose its reflective sliderScaleY property. Keep their layout
++        // stable instead of applying the stock slider's unfurl animation.
++        if (qsBrightness != null && qsBrightness.getResources().getBoolean(
++                com.android.systemui.R.bool.config_neo2_use_frontlight_brightness_slider)) {
++            return;
++        }
+         View qqsBrightness = mQuickQSPanelController.getBrightnessView();
+diff --git a/services/java/com/android/server/SystemServer.java b/services/java/com/android/server/SystemServer.java
+--- a/services/java/com/android/server/SystemServer.java
++++ b/services/java/com/android/server/SystemServer.java
+@@ -3203,6 +3203,17 @@
+             t.traceEnd();
+         }
+ 
++        // Flattened APEX discovery returns no manifest services on Android 14.
++        // Aura still includes the DeviceLock controller and its feature XML.
++        if ("aura_c".equals(SystemProperties.get("ro.neo2.eink.device_variant"))
++                && !SystemProperties.getBoolean("ro.apex.updatable", false)
++                && mSystemContext.getPackageManager().hasSystemFeature(
++                        PackageManager.FEATURE_DEVICE_LOCK)) {
++            mSystemServiceManager.startServiceFromJar(
++                    "com.android.server.devicelock.DeviceLockService",
++                    "/apex/com.android.devicelock/javalib/service-devicelock.jar");
++        }
++
+         // make sure no other services are started after this point
+         mSystemServiceManager.sealStartedServices();
+ 
+diff --git a/services/core/java/com/android/server/neo2/Neo2SleepImagePowerOffGuard.java b/services/core/java/com/android/server/neo2/Neo2SleepImagePowerOffGuard.java
+new file mode 100644
+--- /dev/null
++++ b/services/core/java/com/android/server/neo2/Neo2SleepImagePowerOffGuard.java
+@@ -0,0 +1,20 @@
++package com.android.server.neo2;
++
++/** Bounded Aura panel dwell, not a physical-completion detector. Caller serializes access. */
++public final class Neo2SleepImagePowerOffGuard {
++    public static final long SETTLE_MILLIS = 2000;
++    private long deadline = -1;
++
++    public void start(long now) {
++        if (now < 0 || now > Long.MAX_VALUE - SETTLE_MILLIS) {
++            throw new IllegalArgumentException("invalid monotonic time");
++        }
++        deadline = now + SETTLE_MILLIS;
++    }
++
++    public long remaining(long now) {
++        return deadline < 0 ? 0 : Math.max(0, Math.min(SETTLE_MILLIS, deadline - now));
++    }
++
++    public void cancel() { deadline = -1; }
++}
+diff --git a/services/core/java/com/android/server/policy/PhoneWindowManager.java b/services/core/java/com/android/server/policy/PhoneWindowManager.java
+--- a/services/core/java/com/android/server/policy/PhoneWindowManager.java
++++ b/services/core/java/com/android/server/policy/PhoneWindowManager.java
+@@ -3982,6 +3982,18 @@
+     @Override
+     public int interceptKeyBeforeQueueing(KeyEvent event, int policyFlags) {
+         final int keyCode = event.getKeyCode();
++        // Aura's charger thread emits a keypad wake event on USB reattachment.
++        // Filter before both boot-time and normal wake handling; Android's
++        // wake-on-plug setting cannot suppress a driver-generated key event.
++        if (keyCode == KeyEvent.KEYCODE_WAKEUP) {
++            final InputDevice device = event.getDevice();
++            if (device != null && com.android.server.neo2.AuraChargerWakePolicy.shouldIgnore(
++                    SystemProperties.get("ro.neo2.eink.device_variant"),
++                    device.getName(), device.getVendorId(), device.getProductId(),
++                    device.isExternal(), event.getScanCode())) {
++                return 0;
++            }
++        }
+         final boolean down = event.getAction() == KeyEvent.ACTION_DOWN;
+         boolean isWakeKey = (policyFlags & WindowManagerPolicy.FLAG_WAKE) != 0
+                 || event.isWakeKey();
+diff --git a/services/core/java/com/android/server/neo2/AuraChargerWakePolicy.java b/services/core/java/com/android/server/neo2/AuraChargerWakePolicy.java
+new file mode 100644
+--- /dev/null
++++ b/services/core/java/com/android/server/neo2/AuraChargerWakePolicy.java
+@@ -0,0 +1,14 @@
++package com.android.server.neo2;
++
++/** Identifies the Aura internal keypad's synthetic charger wake scan code. */
++public final class AuraChargerWakePolicy {
++    private AuraChargerWakePolicy() {}
++
++    // Only call for KEYCODE_WAKEUP. Power, cover and other input paths are unchanged.
++    public static boolean shouldIgnore(String variant, String name, int vendorId,
++            int productId, boolean external, int scanCode) {
++        return "aura_c".equals(variant) && "mtk-kpd".equals(name)
++                && vendorId == 0x2454 && productId == 0x6500
++                && !external && scanCode == 143;
++    }
++}

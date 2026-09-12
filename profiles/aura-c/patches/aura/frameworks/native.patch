@@ -1,0 +1,96 @@
+diff --git a/services/surfaceflinger/DisplayDevice.cpp b/services/surfaceflinger/DisplayDevice.cpp
+index 067645a..e8353d6 100644
+--- a/services/surfaceflinger/DisplayDevice.cpp
++++ b/services/surfaceflinger/DisplayDevice.cpp
+@@ -84,7 +84,7 @@ DisplayDevice::DisplayDevice(DisplayDeviceCreationArgs& args)
+                             flinger = wp<SurfaceFlinger>(mFlinger)]() -> bool {
+                         const auto strong = flinger.promote();
+                         if (strong == nullptr) return false;
+-                        strong->scheduleComposite(SurfaceFlinger::FrameHint::kNone);
++                        strong->scheduleNeo2EinkRepaint();
+                         return true;
+                     })
+                     .build());
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index 15ce6a5..0f47406 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -24,6 +24,7 @@
+ 
+ #include "SurfaceFlinger.h"
+ 
++#include <android-base/file.h>
+ #include <android-base/parseint.h>
+ #include <android-base/properties.h>
+ #include <android-base/stringprintf.h>
+@@ -2052,6 +2053,14 @@ void SurfaceFlinger::scheduleComposite(FrameHint hint) {
+     scheduleCommit(hint);
+ }
+ 
++void SurfaceFlinger::scheduleNeo2EinkRepaint() {
++    const auto weak = wp<SurfaceFlinger>::fromExisting(this);
++    static_cast<void>(mScheduler->schedule([weak] {
++        const auto strong = weak.promote();
++        if (strong != nullptr) strong->scheduleRepaint();
++    }));
++}
++
+ void SurfaceFlinger::scheduleRepaint() {
+     mGeometryDirty = true;
+     scheduleComposite(FrameHint::kActive);
+@@ -3165,13 +3174,27 @@ std::pair<DisplayModes, DisplayModePtr> SurfaceFlinger::loadDisplayModes(
+                             });
+ 
+     DisplayModes newModes;
++    const bool normalizeAuraCGeometry =
++            base::GetProperty("ro.neo2.eink.device_variant", "") == "aura_c";
+     for (const auto& hwcMode : hwcModes) {
++        int32_t displayWidth = hwcMode.width;
++        int32_t displayHeight = hwcMode.height;
++        if (normalizeAuraCGeometry && displayWidth == 350 && displayHeight == 1907) {
++            // Aura C's Android-11 HWC exposes an electrical framebuffer tuple to
++            // newer framework clients. Stock SurfaceFlinger instead composes in
++            // the measured 1860x2480 logical space; the existing primary-display
++            // orientation then produces its 2480x1860 panel-facing target.
++            displayWidth = 2480;
++            displayHeight = 1860;
++            ALOGW("Normalizing Aura C legacy HWC mode %dx%d to %dx%d", hwcMode.width,
++                  hwcMode.height, displayWidth, displayHeight);
++        }
+         const DisplayModeId id{nextModeId++};
+         newModes.try_emplace(id,
+                              DisplayMode::Builder(hwcMode.hwcId)
+                                      .setId(id)
+                                      .setPhysicalDisplayId(displayId)
+-                                     .setResolution({hwcMode.width, hwcMode.height})
++                                     .setResolution({displayWidth, displayHeight})
+                                      .setVsyncPeriod(hwcMode.vsyncPeriod)
+                                      .setDpiX(hwcMode.dpiX)
+                                      .setDpiY(hwcMode.dpiY)
+@@ -5619,6 +5642,14 @@ status_t SurfaceFlinger::doDump(int fd, const DumpArgs& args, bool asProto) {
+     const int pid = ipc->getCallingPid();
+     const int uid = ipc->getCallingUid();
+ 
++    // Mutating diagnostic command: shell/root only, separately debug-gated.
++    if (!args.empty() && String8(args[0]) == String8("--neo2-eink-refresh")) {
++        if (uid != AID_SHELL && uid != AID_ROOT) return PERMISSION_DENIED;
++        const std::string mode = args.size() == 2 ? std::string(String8(args[1]).c_str()) : "help";
++        const auto receipt = ::neo2::eink::android::RequestNeo2EinkDiagnosticRefresh(mode);
++        return ::android::base::WriteStringToFd(receipt, fd) ? NO_ERROR : BAD_VALUE;
++    }
++
+     if ((uid != AID_SHELL) &&
+             !PermissionCache::checkPermission(sDump, pid, uid)) {
+         StringAppendF(&result, "Permission Denial: can't dump SurfaceFlinger from pid=%d, uid=%d\n",
+diff --git a/services/surfaceflinger/SurfaceFlinger.h b/services/surfaceflinger/SurfaceFlinger.h
+index 581ea4d..45482bb 100644
+--- a/services/surfaceflinger/SurfaceFlinger.h
++++ b/services/surfaceflinger/SurfaceFlinger.h
+@@ -267,6 +267,7 @@ public:
+     void scheduleComposite(FrameHint);
+     // As above, but also force dirty geometry to repaint.
+     void scheduleRepaint();
++    void scheduleNeo2EinkRepaint();
+     // Schedule sampling independently from commit or composite.
+     void scheduleSample();
+ 

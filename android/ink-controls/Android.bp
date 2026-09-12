@@ -1,0 +1,10 @@
+android_app {
+    name: "InkControls",
+    srcs: ["src/**/*.java"],
+    asset_dirs: ["assets"],
+    manifest: "AndroidManifest.xml",
+    platform_apis: true,
+    certificate: "platform",
+    privileged: true,
+    optimize: { enabled: true },
+}

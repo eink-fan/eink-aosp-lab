@@ -1,0 +1,18 @@
+diff --git a/system/gd/hci/controller.cc b/system/gd/hci/controller.cc
+--- a/system/gd/hci/controller.cc
++++ b/system/gd/hci/controller.cc
+@@ -389,7 +389,13 @@
+   }
+ 
+   void read_default_erroneous_data_reporting_handler(CommandCompleteView view) {
+-    ASSERT(view.GetCommandOpCode() == OpCode::READ_DEFAULT_ERRONEOUS_DATA_REPORTING);
++    // Packet views must be validated before reading fields. This optional
++    // command may be rejected by older controllers despite their feature mask.
++    if (!view.IsValid() ||
++        view.GetCommandOpCode() != OpCode::READ_DEFAULT_ERRONEOUS_DATA_REPORTING) {
++      LOG_ERROR("invalid erroneous data reporting command complete");
++      return;
++    }
+     auto complete_view = ReadDefaultErroneousDataReportingCompleteView::Create(view);
+     // Check to see that the opcode was correct.
+     // ASSERT(complete_view.IsValid()) is not used here to avoid process abort.

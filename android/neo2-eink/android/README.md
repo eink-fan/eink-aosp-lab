@@ -1,5 +1,10 @@
 # Android 14 integration
 
+For the distinction between framework targets, model/runtime bindings and
+portable color support, see [Android integration targets](../../../docs/ANDROID_INTEGRATION.md).
+This historical bridge is also used by the separately patched Android-17
+recipe; the directory name does not make it a universal device backend.
+
 This directory contains the Android-specific bridge used by the presentation
 adapter. It is compiled into the pinned Android 14 tree and is valid only with
 the matching device integration and approved restricted inputs.
@@ -18,7 +23,7 @@ or reproduce the panel-specific waveform, transport, or power behavior.
 
 ## Maintenance
 
-Make Android changes in the reproducible remote workspace, export reviewed
-patches to this control repository, then build and test through the documented
-workflow. Current build and device procedures live in [`docs/`](../../docs/);
+Keep authored changes and reviewed patches in this repository, then build in
+a separate local workspace through the selected profile's documented workflow.
+Current build and device procedures live in [`docs/`](../../../docs/);
 the portable scheduler design is in [`../DESIGN.md`](../DESIGN.md).

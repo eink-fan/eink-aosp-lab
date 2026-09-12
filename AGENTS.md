@@ -1,9 +1,12 @@
 # Agent instructions
 
-This repository is a self-contained local Android-17 Neo 2 build recipe. Its
-only intentionally missing inputs are vendor-owned bytes extracted by the
-device owner from their own USB-connected Neo 2. Do not fetch, commit, upload,
-or redistribute those bytes.
+This repository publishes reusable e-ink source and owner-operated Android
+bring-up instructions, including model-specific recovery and installation.
+The Neo 2 Android-17 recipe is self-contained apart from owner-extracted
+vendor inputs. State the actual integration coverage of other profiles.
+Do not fetch, commit, upload, or redistribute vendor-owned bytes, credentials,
+personal paths, device-instance identifiers, or private operational records.
+Write instructions for the working path, not chronological development accounts.
 
 ## First read
 
@@ -60,7 +63,10 @@ stages only the owner-extracted payload. The build script produces
   `--with-frontlight-controls` adds only the two model-typed primary-node
   permissions. Do not broaden them to generic sysfs or claim hardware readback,
   physical completion, or qualification from a build alone.
-- Do not alter stock partitions. A DSU install, one-boot enablement, manual
+- Publishing reviewed recovery/unlocking/partition procedures is in scope.
+  Executing a device mutation requires explicit authorization for that action;
+  a request to document a procedure does not authorize running it.
+  A DSU install, one-boot enablement, manual
   reboot, visible interaction, evidence capture, and DSU cleanup are separate
   decisions. Follow `tools/dsu/README.md`; never chain them automatically.
 

@@ -7,6 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(einklab_core
+  core/src/eink_rgb_frame_tracker.cpp
+  core/src/eink_color_quality.cpp
+  core/src/eink_gray_preference.cpp
   core/src/eink_capture_admission_policy.cpp
   core/src/eink_capture_pressure_accounting.cpp
   core/src/eink_frame_demand_gate.cpp
@@ -26,6 +29,10 @@ target_include_directories(einklab_core PUBLIC
 target_compile_options(einklab_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 set(EINKLAB_TESTS
+  eink_rgb_frame_tracker_test
+  eink_engine_marker_guard_test
+  eink_color_quality_test
+  eink_gray_preference_test
   eink_capture_admission_policy_test
   eink_capture_pressure_accounting_test
   eink_frame_demand_gate_test

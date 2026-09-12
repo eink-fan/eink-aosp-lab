@@ -1,0 +1,12 @@
+diff --git a/packages/SettingsProvider/res/values/defaults.xml b/packages/SettingsProvider/res/values/defaults.xml
+index a93cd62e63..1ae7198153 100644
+--- a/packages/SettingsProvider/res/values/defaults.xml
++++ b/packages/SettingsProvider/res/values/defaults.xml
+@@ -20,6 +20,6 @@
+ <resources>
+     <bool name="def_dim_screen">true</bool>
+-    <integer name="def_screen_off_timeout">60000</integer>
++    <integer name="def_screen_off_timeout">600000</integer>
+     <integer name="def_sleep_timeout">-1</integer>
+     <bool name="def_airplane_mode_on">false</bool>
+     <bool name="def_theater_mode_on">false</bool>

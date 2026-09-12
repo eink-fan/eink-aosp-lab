@@ -29,7 +29,7 @@ The reference transform turns presentation content into panel space once and
 inverse-maps final planes for previews. This measured model-level transform is
 public configuration, not a device-instance capture.
 
-This division lets another Android 14 e-ink device reuse or replace the policy
+This division lets another e-ink device and Android target reuse or replace the policy
 without receiving a misleading promise that any device backend will work.
 
 The `profiles/` directory may add model-level public configuration such as
@@ -37,3 +37,11 @@ geometry and mode hints. It must never contain a proprietary runtime, private
 payload manifest, host identity, or device-instance record. The Neo 2
 Android-14 and Android-17 profiles are reference examples; their framework
 integrations remain separate.
+
+Framework target, model/runtime binding, and color treatment are independent
+axes. The portable [color utilities](COLOR.md) operate before backend mapping;
+they do not select a device, runtime, waveform, or Android version. The opaque
+source-buffer seam supports backend-owned color payloads while retaining the
+existing grayscale path. [Android integration targets](ANDROID_INTEGRATION.md)
+and the [Aura C reference](../profiles/aura-c/README.md) describe the separate
+framework and hardware responsibilities and their current public coverage.

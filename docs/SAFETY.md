@@ -1,7 +1,9 @@
 # Safety
 
-- Preserve the stock installation as the recovery baseline.
-- Do not write, erase, unlock, or flash stock partitions through this project.
+- Preserve a verified owner-local recovery baseline before modifying a device.
+- Unlocking, boot-image changes, userdata erasure and permanent installation
+  are explicit owner decisions. Bind each operation to the exact device,
+  image hash, partition and recovery plan; do not chain it from a build.
 - Prefer read-only evidence and reversible experiments.
 - Do not collect or publish personal data, logs, account material, keys, or
   device identifiers.
